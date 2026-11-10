@@ -13,6 +13,22 @@ pub struct ServerCfg {
 pub struct AutomationCfg {
     #[serde(default)]
     pub mode: String,
+    /// CDP 연결 포트 (전용 Chrome). 기본 9333
+    #[serde(default)]
+    pub cdp_port: u16,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct HandoverCfg {
+    /// auto: 감지 시 자동 인수인계 / manual: 알림만
+    #[serde(default)]
+    pub mode: String,
+    /// 스레드당 안전 메시지 수 (소프트 리밋). 기본 25
+    #[serde(default)]
+    pub thread_soft_limit: u32,
+    /// 이 사용자 입력마다 아카이브에 기록
+    #[serde(default)]
+    pub archive: bool,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -21,6 +37,8 @@ pub struct Config {
     pub server: ServerCfg,
     #[serde(default)]
     pub automation: AutomationCfg,
+    #[serde(default)]
+    pub handover: HandoverCfg,
 }
 
 impl Config {
@@ -44,6 +62,15 @@ impl Config {
         }
         if cfg.automation.mode.is_empty() {
             cfg.automation.mode = "mock".into();
+        }
+        if cfg.automation.cdp_port == 0 {
+            cfg.automation.cdp_port = 9333;
+        }
+        if cfg.handover.mode.is_empty() {
+            cfg.handover.mode = "auto".into();
+        }
+        if cfg.handover.thread_soft_limit == 0 {
+            cfg.handover.thread_soft_limit = 25;
         }
         cfg
     }

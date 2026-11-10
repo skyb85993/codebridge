@@ -9,7 +9,10 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::archive;
+use crate::automation;
 use crate::fixture;
+use crate::harness;
 use crate::sse;
 use crate::translate;
 use crate::AppState;
@@ -70,14 +73,18 @@ fn user_text(req: &ChatRequest) -> String {
 /// OpenAI 호환 채팅 완성 엔드포인트.
 /// Phase 0: mock 모드 — 고정 응답(마크다운 코드펜스)을 관대 파서로 번역해
 /// write tool_calls로 승격까지 왕복 전체를 검증한다.
+/// Phase 1+: browser 모드 — CDP로 로그인된 ChatGPT에 전송·응답 추출.
 pub async fn chat_completions(
     State(app): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
+    if app.cfg.automation.mode == "browser" {
+        return browser_completions(&app, &req).await;
+    }
     if app.cfg.automation.mode != "mock" {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "automation engine is Phase 1+; set [automation] mode=\"mock\"",
+            "usage: [automation] mode = \"mock\" | \"browser\"",
         )
             .into_response();
     }
@@ -207,6 +214,140 @@ pub async fn chat_completions(
                     "role": "assistant",
                     "content": content,
                     "tool_calls": tool_calls
+                },
+                "finish_reason": finish
+            }],
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        }))
+        .into_response()
+    }
+}
+
+fn msg_tool_text(m: &ChatMessage) -> String {
+    m.content
+        .as_ref()
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// browser 모드: 실제 CDP 자동화 경로 (Phase 1~2).
+async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
+    let id = next_id();
+    let workspace =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let workspace_s = workspace.to_string_lossy().to_string();
+    let arc = archive::Archive::new(&workspace_s);
+    arc.record("USER", &user_text(req));
+    let n = arc.bump_counter();
+
+    let prompt = harness::flatten::build(req, &workspace, None);
+    println!(
+        "[browser] cwd={} prompt_chars={} msg_count={}",
+        workspace_s,
+        prompt.chars().count(),
+        n
+    );
+
+    let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
+    let outcome = match engine.send_and_await(&prompt).await {
+        Ok(o) => o,
+        Err(e) => automation::engine::SendOutcome {
+            text: format!(
+                "(브릿지 오류) ChatGPT에 보내지 못했습니다: {e}. Chrome(전용 프로필, CDP {})과 ChatGPT 로그인 상태를 확인해 주세요.",
+                app.cfg.automation.cdp_port
+            ),
+            limit_hit: false,
+        },
+    };
+    let mut raw = outcome.text;
+
+    // 한도 배너 감지 → 인수인계 팩 생성 → 새 채팅 교체 → 팩 재전송 (Phase 2, F2.17~F2.19)
+    if outcome.limit_hit {
+        let snap = harness::flatten::snapshot(&workspace);
+        let tool_summary: String = req
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(msg_tool_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pack = automation::handover::build_pack(
+            &workspace_s,
+            &user_text(req),
+            &tool_summary,
+            &snap,
+        );
+        arc.record("HANDOVER", &pack);
+        let fname = format!("handover-{id}.md");
+        let saved = arc.write_artifact(&fname, &pack);
+        println!("[browser] limit banner hit -> handover saved to {saved:?}");
+
+        if app.cfg.handover.mode == "auto" {
+            match engine.rotate_new_chat().await {
+                Ok(_) => {
+                    arc.reset_counter();
+                    let retry = format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
+                    match engine.send_and_await(&retry).await {
+                        Ok(o2) => raw = o2.text,
+                        Err(e) => {
+                            raw = format!("(인수인계 재전송 실패: {e})\n\n{pack}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    raw = format!("{raw}\n\n(새 채팅 교체 실패: {e})");
+                }
+            }
+        }
+    }
+
+    if harness::flatten::has_unterminated_fence(&raw) {
+        raw.push_str(
+            "\n\n(참고: 응답이 잘렸을 수 있습니다 — 마지막 코드펜스가 닫히지 않았습니다. \"이어서 계속\"이라고 보내면 이어집니다.)",
+        );
+    }
+    if n >= app.cfg.handover.thread_soft_limit {
+        raw.push_str(&format!(
+            "\n\n(참고: 이 스레드에 메시지가 {n}개 쌓였습니다. 한도 근접 시 자동 인수인계되며, 수동으로는 \"지금 인수인계\"라고 요청하세요.)"
+        ));
+    }
+
+    arc.record("ASSISTANT", &raw);
+
+    let files = translate::lenient::parse(&raw);
+    let (calls, issues) = translate::lenient::to_tool_calls(&files);
+    let mut text = raw.clone();
+    if !issues.is_empty() {
+        text.push_str(&format!(
+            "\n\n(안내: 경로 주석이 없거나 불완전한 코드 블록 {}개는 저장 대상에서 제외했습니다.)",
+            issues.len()
+        ));
+    }
+    let finish = if calls.is_empty() { "stop" } else { "tool_calls" }.to_string();
+
+    println!(
+        "[browser] model={} stream={} msgs={} calls={} id={id}",
+        req.model,
+        req.stream,
+        req.messages.len(),
+        calls.len()
+    );
+
+    if req.stream {
+        sse::stream_response(id, req.model.clone(), text, calls, finish)
+    } else {
+        Json(json!({
+            "id": id,
+            "object": "chat.completion",
+            "created": sse::now_secs(),
+            "model": req.model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": calls
                 },
                 "finish_reason": finish
             }],

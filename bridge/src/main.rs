@@ -6,8 +6,11 @@ use axum::{
 };
 
 mod api;
+mod archive;
+mod automation;
 mod cfg;
 mod fixture;
+mod harness;
 mod sse;
 mod translate;
 
