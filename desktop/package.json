@@ -12,6 +12,7 @@
   "devDependencies": {
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
+    "electron-updater": "^6.8.11",
     "png-to-ico": "^3.0.1"
   },
   "build": {
@@ -47,6 +48,13 @@
       "target": "nsis",
       "icon": "build/icon.ico"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "codebridge",
+        "repo": "codebridge"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

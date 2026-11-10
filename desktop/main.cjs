@@ -19,6 +19,7 @@ const {
   session,
   nativeImage,
 } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -61,6 +62,7 @@ let projectDir = '';
 let appQuitting = false;
 let probeTimer = null;
 let loginRequired = false;
+let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -77,6 +79,17 @@ function readSettings() {
   } catch {
     return {};
   }
+}
+
+async function resolveProjectDir() {
+  let dir = (readSettings().projectDir || '').trim();
+  if (dir && fs.existsSync(dir)) return dir;
+  // 경로가 유효하지 않으면 무효화하고 폴더를 다시 고르게 한다
+  if (dir) {
+    appendLog('app', `[app] stored projectDir invalid: ${dir}\n`);
+    writeSettings({ ...readSettings(), projectDir: '' });
+  }
+  return null;
 }
 
 function writeSettings(s) {
@@ -122,6 +135,10 @@ function spawnBridge(cwd) {
   });
   bridgeProc.stdout.pipe(out);
   bridgeProc.stderr.pipe(out);
+  bridgeProc.on('error', (e) => {
+    console.error('[bridge] spawn error', e);
+    appendLog('bridge', `[bridge] spawn error: ${e}\n`);
+  });
   bridgeProc.on('exit', (code) => {
     console.log('[bridge] exit', code);
     appendLog('bridge', `[bridge] exit code=${code}\n`);
@@ -153,6 +170,10 @@ function spawnOpencode(cwd) {
   );
   opencodeProc.stdout.pipe(out);
   opencodeProc.stderr.pipe(out);
+  opencodeProc.on('error', (e) => {
+    console.error('[opencode] spawn error', e);
+    appendLog('opencode', `[opencode] spawn error: ${e}\n`);
+  });
   opencodeProc.stdout.on('data', (chunk) => {
     const line = String(chunk);
     const m = line.match(/server password\s*(\S+)/);
@@ -276,6 +297,9 @@ function injectAuthHeader() {
 
 async function startServices() {
   if (!projectDir) {
+    projectDir = (await resolveProjectDir()) || '';
+  }
+  if (!projectDir) {
     const picked = await pickProjectFolder();
     if (!picked) {
       app.quit();
@@ -371,6 +395,61 @@ function killChild(proc) {
   }
 }
 
+function setupAutoUpdate() {
+  try {
+    autoUpdater.logger = console;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('update-available', (info) => {
+      updateState = 'available';
+      if (tray) tray.setToolTip(`CodeBridge — 업데이트 ${info.version} 다운로드 중`);
+      appendLog('updater', `[updater] update-available v${info.version}\n`);
+    });
+    autoUpdater.on('update-not-available', (info) => {
+      updateState = 'up-to-date';
+      if (tray) tray.setToolTip('CodeBridge Desktop — 최신 버전');
+      appendLog('updater', `[updater] up-to-date v${info.version}\n`);
+    });
+    autoUpdater.on('download-progress', (p) => {
+      updateState = 'available';
+      if (tray) tray.setToolTip(`CodeBridge — 업데이트 다운로드 중 ${Math.floor(p.percent || 0)}%`);
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      updateState = 'downloaded';
+      if (tray) tray.setToolTip('CodeBridge — 재시작하면 업데이트가 적용됩니다');
+      appendLog('updater', `[updater] update-downloaded v${info.version}\n`);
+      if (mainWindow) {
+        const r = dialog.showMessageBoxSync(mainWindow, {
+          type: 'info',
+          buttons: ['지금 재시작', '나중에'],
+          defaultId: 0,
+          cancelId: 1,
+          title: 'CodeBridge 업데이트',
+          message: `새 버전(${info.version})이 준비되었습니다. 지금 재시작해서 적용할까요?`,
+        });
+        if (r === 0) {
+          autoUpdater.quitAndInstall();
+        }
+      }
+    });
+    autoUpdater.on('error', (err) => {
+      updateState = 'error';
+      if (tray) tray.setToolTip('CodeBridge — 업데이트 확인 실패');
+      appendLog('updater', `[updater] error: ${err && err.message ? err.message : err}\n`);
+      console.error('[updater] error', err);
+    });
+
+    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
+      console.error('[updater] check failed', e);
+      appendLog('updater', `[updater] check failed: ${e}\n`);
+    });
+  } catch (e) {
+    console.error('[updater] setup failed', e);
+    appendLog('updater', `[updater] setup failed: ${e}\n`);
+  }
+}
+
 function buildTray() {
   const icon = nativeImage.createFromPath(path.join(RES, 'tray-icon.png'));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
@@ -413,6 +492,30 @@ function buildTray() {
         killChild(chromeProc);
         chromeProc = null;
         spawnChrome();
+      },
+    },
+    {
+      label: '업데이트 확인',
+      click: async () => {
+        if (!autoUpdater) {
+          dialog.showMessageBoxSync({ type: 'warning', title: 'CodeBridge', message: '업데이터가 초기화되지 않았습니다.' });
+          return;
+        }
+        try {
+          const result = await autoUpdater.checkForUpdates();
+          const latest = result && result.updateInfo ? result.updateInfo.version : '?';
+          if (updateState === 'downloaded') {
+            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `새 버전(${latest})이 다운로드되어 있습니다. 종료/재시작 시 자동 설치됩니다.` });
+          } else if (updateState === 'available') {
+            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `새 버전(${latest}) 다운로드 중입니다.` });
+          } else if (updateState === 'up-to-date') {
+            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `현재 버전이 최신입니다 (v${app.getVersion()}).` });
+          } else {
+            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `업데이트 확인 완료 (v${app.getVersion()}, 최신: ${latest}).` });
+          }
+        } catch (e) {
+          dialog.showMessageBoxSync({ type: 'warning', title: 'CodeBridge', message: `업데이트 확인 실패: ${e && e.message ? e.message : e}\n(GitHub 릴리스가 공개된 후 동작합니다)` });
+        }
       },
     },
     { type: 'separator' },
@@ -472,11 +575,12 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    projectDir = readSettings().projectDir || '';
+    projectDir = '';
     ensureDir(DATA_DIR);
     ensureDir(LOG_DIR);
     createWindow();
     buildTray();
+    setupAutoUpdate();
     const started = await startServices();
     if (started) {
       bootUI();
