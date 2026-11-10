@@ -1,5 +1,6 @@
-//! CDP 엔진 (Phase 1~2 핵심):
-//! 전용 Chrome(CDP 포트)에 붙어 ChatGPT 탭을 찾아 입력→전송→완료 감지→응답 추출.
+//! CDP 엔진 (Phase 1~3 핵심):
+//! 전용 Chrome(CDP 포트)에 붙어 사이트를 찾아 입력→전송→완료 감지→응답 추출.
+//! Site: ChatGpt | Gemini — 모델 id에 "gemini"가 포함되면 Gemini (provider/model로 호출부가 정함).
 //! 선택자 근거: 2026-11-10 실측 (docs/spike-report.md, profiles.toml 참고).
 
 use std::time::{Duration, Instant};
@@ -9,19 +10,74 @@ use chromiumoxide::page::Page;
 use futures::StreamExt;
 use serde_json::Value;
 
-pub const COMPOSER_SEL: &str =
-    "textarea#prompt-textarea, div#prompt-textarea, [contenteditable='true']";
-const ASSISTANT_SEL: &str =
-    "div[class*='DilResponseRoot'], [class*='entity-prose-inset']";
-const SEND_SEL: &str =
-    "button[data-testid='send-button'], button[aria-label='보내기'], button[aria-label='Send prompt'], button[aria-label='Send']";
-const STOP_SEL: &str =
-    "button[aria-label='중지'], button[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop streaming']";
-const NEW_CHAT_SEL: &str =
-    "button[aria-label='새 채팅'], button[aria-label='New chat'], button[data-testid='create-new-chat-button']";
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Site {
+    ChatGpt,
+    Gemini,
+}
 
-/// profiles.toml [profiles.chatgpt].limit_texts와 동기화 (한/영)
-pub const LIMIT_TEXTS: &[&str] = &["limit reached", "usage cap", "rate limit", "메시지 한도", "사용 한도"];
+impl Site {
+    pub fn from_model(model: &str) -> Site {
+        if model.to_lowercase().contains("gemini") {
+            Site::Gemini
+        } else {
+            Site::ChatGpt
+        }
+    }
+}
+
+struct SiteSelectors {
+    host: &'static str,
+    composer_sel: &'static str,
+    assistant_sel: &'static str,
+    code_root_sel: &'static str,
+    stop_sel: &'static str,
+    send_native: bool, // true면 CDP Element 네이티브 클릭 (Angular Material 계열)
+    send_sel: &'static str,
+    new_chat_sel: &'static str,
+}
+
+const CHATGPT_SEL: SiteSelectors = SiteSelectors {
+    host: "chatgpt.com",
+    composer_sel: "textarea#prompt-textarea, div#prompt-textarea, [contenteditable='true']",
+    assistant_sel: "div[class*='DilResponseRoot'], [class*='entity-prose-inset']",
+    code_root_sel: "[class*='DilResponseRoot'], [class*='entity-prose-inset']",
+    stop_sel: "button[aria-label='중지'], button[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop streaming']",
+    send_native: false,
+    send_sel: "button[data-testid='send-button'], button[aria-label='보내기'], button[aria-label='Send prompt'], button[aria-label='Send']",
+    new_chat_sel: "button[aria-label='새 채팅'], button[aria-label='New chat'], button[data-testid='create-new-chat-button']",
+};
+
+const GEMINI_SEL: SiteSelectors = SiteSelectors {
+    host: "gemini.google.com",
+    composer_sel: "div.ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']",
+    assistant_sel: "message-content",
+    code_root_sel: "message-content",
+    stop_sel: "button[aria-label*='중지'], button[aria-label*='Stop'], button[aria-label*='stop']",
+    send_native: true,
+    send_sel: "button[aria-label*='보내']",
+    new_chat_sel: "button[aria-label*='새 채팅'], button[aria-label='새 채팅']",
+};
+
+fn site_selectors(site: Site) -> &'static SiteSelectors {
+    match site {
+        Site::ChatGpt => &CHATGPT_SEL,
+        Site::Gemini => &GEMINI_SEL,
+    }
+}
+
+/// 한도 배너 텍스트 (두 사이트 공통 + 사이트별)
+pub const LIMIT_TEXTS: &[&str] = &[
+    "limit reached",
+    "usage cap",
+    "rate limit",
+    "메시지 한도",
+    "사용 한도",
+    "사용량 한도",
+    "일일 한도",
+    "daily limit",
+    "quota",
+];
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -44,8 +100,13 @@ impl std::fmt::Display for EngineError {
 pub struct SendOutcome {
     pub text: String,
     pub limit_hit: bool,
-    /// 마지막 assistant 응답에 포함된 코드 블록들 (pre.innerText, DOM 순서)
+    /// 마지막 assistant 응답의 코드 블록들 (pre.innerText, DOM 순서)
     pub code_blocks: Vec<String>,
+}
+
+pub struct CompletedPage {
+    pub browser: Browser,
+    pub page: Page,
 }
 
 fn js_string(s: &str) -> String {
@@ -84,7 +145,8 @@ impl Engine {
         Ok(browser)
     }
 
-    async fn find_chatgpt_tab(&self, browser: &Browser) -> Result<Page, EngineError> {
+    async fn find_tab(&self, browser: &Browser, site: Site) -> Result<Page, EngineError> {
+        let host = site_selectors(site).host;
         // handler가 대상 목록을 받을 때까지 재시도
         let mut pages = browser.pages().await.unwrap_or_default();
         for _ in 0..12 {
@@ -97,23 +159,32 @@ impl Engine {
         let mut fallback = None;
         for p in pages {
             let u = p.url().await.ok().flatten().unwrap_or_default();
-            if u.contains("chatgpt.com/c/") {
-                return Ok(p); // 대화 탭 우선
-            }
-            if u.contains("chatgpt") || u.contains("auth") {
+            if u.contains(host) {
+                // 대화/앱 URL 우선 (gemini.google.com/app/..., chatgpt.com/c/...)
+                if site == Site::Gemini && u.contains("/app") {
+                    return Ok(p);
+                }
+                if site == Site::ChatGpt && u.contains("/c/") {
+                    return Ok(p);
+                }
                 fallback = Some(p);
             }
         }
         match fallback {
             Some(p) => Ok(p),
             None => browser
-                .new_page("https://chatgpt.com/")
+                .new_page(if site == Site::Gemini {
+                    "https://gemini.google.com/app"
+                } else {
+                    "https://chatgpt.com/"
+                })
                 .await
                 .map_err(|e| EngineError::Page(e.to_string())),
         }
     }
 
-    async fn wait_for_composer(&self, page: &Page, timeout_ms: u64) -> Result<bool, EngineError> {
+    async fn wait_for_composer(&self, page: &Page, site: Site, timeout_ms: u64) -> Result<bool, EngineError> {
+        let sel = site_selectors(site).composer_sel;
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             if Instant::now() >= deadline {
@@ -121,10 +192,7 @@ impl Engine {
             }
             let r = eval_str(
                 page,
-                &format!(
-                    r#"String(!!document.querySelector({sel}))"#,
-                    sel = js_string(COMPOSER_SEL)
-                ),
+                &format!(r#"String(!!document.querySelector({sel}))"#, sel = js_string(sel)),
             )
             .await?;
             if r == "true" {
@@ -134,8 +202,8 @@ impl Engine {
         }
     }
 
-    /// 컴포저를 비운다.
-    async fn clear_composer(&self, page: &Page) -> Result<(), EngineError> {
+    async fn clear_composer(&self, page: &Page, site: Site) -> Result<(), EngineError> {
+        let sel = site_selectors(site).composer_sel;
         let r = eval_str(
             page,
             &format!(
@@ -147,7 +215,7 @@ impl Engine {
                     document.execCommand('delete', false, null);
                     return 'cleared';
                 }})()"#,
-                sel = js_string(COMPOSER_SEL)
+                sel = js_string(sel)
             ),
         )
         .await?;
@@ -157,54 +225,94 @@ impl Engine {
         Ok(())
     }
 
-    /// 페이지 텍스트에 한도 배너가 보이면 true (F2.16 확정 감지).
+    async fn click_send(&self, page: &Page, site: Site) -> Result<(), EngineError> {
+        let sel = site_selectors(site);
+        if sel.send_native {
+            // 입력 직후 Angular가 버튼을 렌더링할 때까지 폴링 (최대 8초)
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                let found = eval_str(
+                    page,
+                    r#"String(!!document.querySelector("button[aria-label*='보내'], button[aria-label='Send message']"))"#,
+                )
+                .await?;
+                if found == "true" {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(EngineError::Page(
+                        "전송 버튼이 활성화되지 않았습니다 (텍스트 입력 미반영?)".into(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        if sel.send_native {
+            // Angular Material 버튼: CDP Element 핸들 클릭은 타임아웃됨 →
+            // JS로 좌표를 읽어 CDP 마우스 이벤트로 클릭 (2026-11-10 실측으로 확인된 동작 경로)
+            let rect_json = eval_str(
+                page,
+                r#"(() => {
+                    const btn = document.querySelector("button[aria-label*='보내'], button[aria-label='Send message']");
+                    if (!btn) return '{}';
+                    const r = btn.getBoundingClientRect();
+                    return JSON.stringify({ x: r.x, y: r.y, w: r.width, h: r.height });
+                })()"#,
+            )
+            .await?;
+            let v: Value = serde_json::from_str(&rect_json).unwrap_or(Value::Null);
+            if v.get("x").is_none() {
+                return Err(EngineError::Page("전송 버튼을 찾지 못했습니다".into()));
+            }
+            let cx = v["x"].as_f64().unwrap_or(0.0) + v["w"].as_f64().unwrap_or(0.0) / 2.0;
+            let cy = v["y"].as_f64().unwrap_or(0.0) + v["h"].as_f64().unwrap_or(0.0) / 2.0;
+            page.click(chromiumoxide::layout::Point::new(cx, cy))
+                .await
+                .map_err(|e| EngineError::Page(e.to_string()))?;
+            return Ok(());
+        }
+        let r = eval_str(
+            page,
+            &format!(
+                r#"(() => {{
+                    const btn = document.querySelector({sel});
+                    if (!btn) return 'missing';
+                    if (btn.disabled) return 'disabled';
+                    btn.click();
+                    return 'clicked';
+                }})()"#,
+                sel = js_string(sel.send_sel)
+            ),
+        )
+        .await?;
+        if r != "clicked" {
+            return Err(EngineError::Page(format!("전송 버튼 클릭 실패: {r}")));
+        }
+        Ok(())
+    }
+
+    /// 페이지 텍스트에 한도 배너가 보이면 true (F2.16 확정 감지)
     pub async fn is_limit_banner(&self, page: &Page) -> bool {
-        let js = r#"(document.body ? document.body.innerText : '')"#.to_string();
-        let Ok(text) = eval_str(page, &js).await else {
+        let js = r#"(document.body ? document.body.innerText : '')"#;
+        let Ok(text) = eval_str(page, js).await else {
             return false;
         };
         let lower = text.to_lowercase();
         LIMIT_TEXTS.iter().any(|t| lower.contains(t))
     }
 
-    /// "새 채팅" 버튼을 클릭해 새 스레드를 만든다 (F2.18/19).
-    pub async fn rotate_new_chat(&self) -> Result<(), EngineError> {
+    /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용)
+    pub async fn probe_site(&self, site: Site) -> Result<(bool, String, String), EngineError> {
+        let sel = site_selectors(site).composer_sel;
         let browser = self.spawn_handler().await?;
-        let page = self.find_chatgpt_tab(&browser).await?;
-        let r = eval_str(
-            &page,
-            &format!(
-                r#"(() => {{
-                    const btn = document.querySelector({sel});
-                    if (!btn) return 'missing';
-                    btn.click();
-                    return 'clicked';
-                }})()"#,
-                sel = js_string(NEW_CHAT_SEL)
-            ),
-        )
-        .await?;
-        if r != "clicked" {
-            return Err(EngineError::Page("새 채팅 버튼을 찾지 못했습니다".into()));
-        }
-        // 새 대화 화면이 될 때까지 컴포저 대기
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        let _ = self.wait_for_composer(&page, 20_000).await?;
-        drop(browser);
-        Ok(())
-    }
-
-    /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용).
-    pub async fn probe(&self) -> Result<(bool, String, String), EngineError> {
-        let browser = self.spawn_handler().await?;
-        let page = self.find_chatgpt_tab(&browser).await?;
+        let page = self.find_tab(&browser, site).await?;
         let js = format!(
             r#"(() => JSON.stringify({{
                 composer: !!document.querySelector({sel}),
                 url: location.href,
                 title: document.title
             }}))()"#,
-            sel = js_string(COMPOSER_SEL)
+            sel = js_string(sel)
         );
         let raw = eval_str(&page, &js).await?;
         drop(browser);
@@ -215,16 +323,55 @@ impl Engine {
         Ok((composer, url, title))
     }
 
-    pub async fn send_and_await(&self, prompt: &str) -> Result<SendOutcome, EngineError> {
+    /// 이전 동작과의 호환: ChatGPT probe
+    pub async fn probe(&self) -> Result<(bool, String, String), EngineError> {
+        self.probe_site(Site::ChatGpt).await
+    }
+
+    /// "새 채팅" 버튼을 클릭해 새 스레드를 만든다 (F2.18/19)
+    pub async fn rotate_new_chat_site(&self, site: Site) -> Result<(), EngineError> {
+        let sel = site_selectors(site);
         let browser = self.spawn_handler().await?;
-        let page = self.find_chatgpt_tab(&browser).await?;
-        if !self.wait_for_composer(&page, 45_000).await? {
+        let page = self.find_tab(&browser, site).await?;
+        let r = eval_str(
+            &page,
+            &format!(
+                r#"(() => {{
+                    const btn = document.querySelector({sel});
+                    if (!btn) return 'missing';
+                    btn.click();
+                    return 'clicked';
+                }})()"#,
+                sel = js_string(sel.new_chat_sel)
+            ),
+        )
+        .await?;
+        if r != "clicked" {
+            return Err(EngineError::Page("새 채팅 버튼을 찾지 못했습니다".into()));
+        }
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let _ = self.wait_for_composer(&page, site, 20_000).await?;
+        drop(browser);
+        Ok(())
+    }
+
+    /// 이전 동작과의 호환: ChatGPT rotate
+    pub async fn rotate_new_chat(&self) -> Result<(), EngineError> {
+        self.rotate_new_chat_site(Site::ChatGpt).await
+    }
+
+    /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.
+    pub async fn send_and_await_site(&self, prompt: &str, site: Site) -> Result<SendOutcome, EngineError> {
+        let sel = site_selectors(site);
+        let browser = self.spawn_handler().await?;
+        let page = self.find_tab(&browser, site).await?;
+        if !self.wait_for_composer(&page, site, 45_000).await? {
             return Err(EngineError::Page(
                 "컴포저를 찾지 못했습니다 (로그인 상태를 확인하세요)".into(),
             ));
         }
 
-        self.clear_composer(&page).await?;
+        self.clear_composer(&page, site).await?;
 
         // 입력
         let insert = format!(
@@ -235,7 +382,7 @@ impl Engine {
                 const ok = document.execCommand('insertText', false, {text});
                 return ok ? 'ok' : 'failed';
             }})()"#,
-            sel = js_string(COMPOSER_SEL),
+            sel = js_string(sel.composer_sel),
             text = js_string(prompt),
         );
         let r = eval_str(&page, &insert).await?;
@@ -243,21 +390,24 @@ impl Engine {
             return Err(EngineError::Page(format!("입력 실패: {r}")));
         }
 
-        // 전송
-        let click = format!(
-            r#"(() => {{
-                const btn = document.querySelector({sel});
-                if (!btn) return 'missing';
-                if (btn.disabled) return 'disabled';
-                btn.click();
-                return 'clicked';
-            }})()"#,
-            sel = js_string(SEND_SEL),
-        );
-        let r = eval_str(&page, &click).await?;
-        if r != "clicked" {
-            return Err(EngineError::Page(format!("전송 버튼 클릭 실패: {r}")));
+        // Gemini: 입력 후 500ms 안정화 대기 + 'input' 이벤트 디스패치 (Angular 상태 동기화)
+        if site == Site::Gemini {
+            let _ = eval_str(
+                &page,
+                r#"(() => {
+                    const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+                    if (!el) return 'missing';
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ' ' }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'dispatched';
+                })()"#,
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
         }
+
+        // 전송
+        self.click_send(&page, site).await?;
 
         // 완료 판정: 마지막 assistant 텍스트가 stable_needed회 연속 동일 & stop 버튼 없음
         let stable_needed = 4usize;
@@ -275,14 +425,14 @@ impl Engine {
                         const el = a[a.length - 1];
                         return el ? el.innerText : '';
                     }})()"#,
-                    sel = js_string(ASSISTANT_SEL)
+                    sel = js_string(sel.assistant_sel)
                 ),
             )
             .await
             .unwrap_or_default();
             let stop = eval_str(
                 &page,
-                &format!(r#"String(!!document.querySelector({sel}))"#, sel = js_string(STOP_SEL)),
+                &format!(r#"String(!!document.querySelector({sel}))"#, sel = js_string(sel.stop_sel)),
             )
             .await
             .unwrap_or_else(|_| "false".into());
@@ -304,15 +454,18 @@ impl Engine {
             return Err(EngineError::Timeout);
         }
 
-        // 마지막 assistant 컨테이너의 코드 블록만 추출 (이전 대화의 코드 블록은 제외)
+        // 마지막 assistant 컨테이너의 코드 블록만 추출
         let blocks_json = eval_str(
             &page,
-            r#"(() => {
-                const roots = [...document.querySelectorAll('[class*="DilResponseRoot"], [class*="entity-prose-inset"]')];
-                const root = roots[roots.length - 1];
-                if (!root) return '[]';
-                return JSON.stringify([...root.querySelectorAll('pre')].map(e => e.innerText));
-            })()"#,
+            &format!(
+                r#"(() => {{
+                    const roots = [...document.querySelectorAll({root})];
+                    const root = roots[roots.length - 1];
+                    if (!root) return '[]';
+                    return JSON.stringify([...root.querySelectorAll('pre')].map(e => e.innerText));
+                }})()"#,
+                root = js_string(sel.code_root_sel)
+            ),
         )
         .await
         .unwrap_or_else(|_| "[]".to_string());
@@ -322,5 +475,10 @@ impl Engine {
         let limit_hit = self.is_limit_banner(&page).await;
         drop(browser); // 브라우저는 유지 (로그인 세션)
         Ok(SendOutcome { text: last, limit_hit, code_blocks })
+    }
+
+    /// 이전 동작과의 호환: ChatGPT send
+    pub async fn send_and_await(&self, prompt: &str) -> Result<SendOutcome, EngineError> {
+        self.send_and_await_site(prompt, Site::ChatGpt).await
     }
 }

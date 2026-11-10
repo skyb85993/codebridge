@@ -11,6 +11,10 @@
         "webchat-mock": {
           "name": "Web Chat Mock (Phase 0)",
           "tool_call": true
+        },
+        "webchat-gemini": {
+          "name": "Google Gemini (web)",
+          "tool_call": true
         }
       }
     }

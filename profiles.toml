@@ -1,7 +1,9 @@
 # 사이트 프로파일 (Phase 1 automation에서 사용)
 # 각 사이트의 UI 선택자·동작을 코드 밖에서 관리해 사이트 개편에 대응한다.
-# NOTE (2026-11-10 CDP 스파이크 실측): data-* 속성(data-testid=send-button, data-message-author-role 등)이
-# 현행 ChatGPT UI에서 사라졌다. 아래는 한/영 UI 혼용 후보이며, 엔진은 후보를 순차 시도한다.
+# NOTE (2026-11-10 CDP 스파이크 실측): 두 사이트 모두 data-testid/data-message-author-role 선택자는 다르다.
+# ChatGPT: aria-label="보내기" / DilResponseRoot·entity-prose-inset / bg-user-message
+# Gemini : aria-label에 '보내' 포함 + CDP 네이티브 클릭 / message-content / markdown-main-panel
+# 두 사이트의 셀렉터는 engine.rs에도 중복 상수로 들어 있다 — 반드시 함께 갱신할 것.
 
 [profiles.chatgpt]
 name = "ChatGPT"
@@ -10,20 +12,17 @@ input_candidates = [
     "#prompt-textarea",
     "div#prompt-textarea",
     "textarea[data-id='root']",
-    "div#prompt-textarea [contenteditable='true']",
     "[contenteditable='true']"
 ]
 send_candidates = [
     "button[aria-label='보내기']",
     "button[aria-label='Send prompt']",
-    "button[aria-label='Send']",
     "button[data-testid='send-button']"
 ]
 stop_candidates = [
-    "button[aria-label='중지']",
     "button[data-testid='stop-button']",
-    "button[aria-label='Stop generating']",
-    "button[aria-label='Stop streaming']"
+    "button[aria-label='중지']",
+    "button[aria-label='Stop generating']"
 ]
 assistant_candidates = [
     "div[class*='DilResponseRoot']",
@@ -37,7 +36,48 @@ user_candidates = [
     "[data-message-author-role='user']"
 ]
 message_container = "div[class*='DilResponseRoot']"
+new_chat_candidates = [
+    "button[aria-label='새 채팅']",
+    "button[data-testid='create-new-chat-button']"
+]
 stream_poll_ms = 300
 stable_needed = 4
 timeout_ms = 180000
 limit_texts = ["limit reached", "usage cap", "rate limit", "메시지 한도", "사용 한도"]
+
+[profiles.gemini]
+name = "Gemini"
+url = "https://gemini.google.com/app"
+input_candidates = [
+    "div.ql-editor",
+    "rich-textarea div[contenteditable='true']",
+    "[contenteditable='true']"
+]
+# Gemini의 전송 버튼은 aria-label 포함 매칭 필요 (부분 매칭 + CDP Element 핸들 클릭 필수)
+send_candidates = [
+    "button[aria-label*='보내']",
+    "button[aria-label='Send message']"
+]
+stop_candidates = [
+    "button[aria-label*='중지']",
+    "button[aria-label*='Stop']",
+    "button[aria-label*='stop']"
+]
+assistant_candidates = [
+    "message-content",
+    "structured-content-container.model-response-text",
+    ".markdown.markdown-main-panel"
+]
+user_candidates = [
+    "user-query",
+    ".query-text"
+]
+message_container = "message-content"
+new_chat_candidates = [
+    "button[aria-label='새 채팅']",
+    "button[aria-label*='새 채팅']"
+]
+stream_poll_ms = 300
+stable_needed = 4
+timeout_ms = 180000
+limit_texts = ["사용량 한도", "일일 한도", "Gemini 사용 한도", "quota", "limit reached", "daily limit"]

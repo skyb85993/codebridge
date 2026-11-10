@@ -38,6 +38,12 @@ pub async fn list_models() -> Json<Value> {
                 "object": "model",
                 "created": 1700000000,
                 "owned_by": "codebridge"
+            },
+            {
+                "id": "webchat-gemini",
+                "object": "model",
+                "created": 1700000001,
+                "owned_by": "codebridge"
             }
         ]
     }))
@@ -223,23 +229,38 @@ pub async fn chat_completions(
     }
 }
 
-/// 전용 Chrome(9333)/ChatGPT 상태 점검용 — 앱이 로그인 여부를 표시할 때 사용한다.
+/// 전용 Chrome(9333)/ChatGPT(+Gemini) 상태 점검용 — 앱이 로그인 여부를 표시할 때 사용한다.
 pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
     let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
-    match engine.probe().await {
-        Ok((composer, url, title)) => Json(json!({
-            "ok": true,
-            "composer": composer,
-            "login_required": !composer,
-            "url": url,
-            "title": title
-        })),
-        Err(e) => Json(json!({
-            "ok": false,
-            "login_required": true,
-            "error": e.to_string()
-        })),
-    }
+    let cgpt = engine.probe_site(automation::engine::Site::ChatGpt).await;
+    let gem = engine.probe_site(automation::engine::Site::Gemini).await;
+    let summarize = |name: &str, r: Result<(bool, String, String), automation::engine::EngineError>| {
+        match r {
+            Ok((composer, url, title)) => json!({
+                "site": name,
+                "ok": true,
+                "composer": composer,
+                "login_required": !composer,
+                "url": url,
+                "title": title,
+            }),
+            Err(e) => json!({
+                "site": name,
+                "ok": false,
+                "login_required": true,
+                "error": e.to_string(),
+            }),
+        }
+    };
+    let chatgpt = summarize("chatgpt", cgpt);
+    let gemini = summarize("gemini", gem);
+    let cg_ok = chatgpt["ok"].as_bool().unwrap_or(false) && !chatgpt["login_required"].as_bool().unwrap_or(true);
+    let gm_ok = gemini["ok"].as_bool().unwrap_or(false) && !gemini["login_required"].as_bool().unwrap_or(true);
+    Json(json!({
+        "ok": cg_ok || gm_ok,
+        "login_required": !(cg_ok || gm_ok),
+        "sites": [chatgpt, gemini],
+    }))
 }
 
 fn msg_tool_text(m: &ChatMessage) -> String {
@@ -250,7 +271,31 @@ fn msg_tool_text(m: &ChatMessage) -> String {
         .to_string()
 }
 
-/// browser 모드: 실제 CDP 자동화 경로 (Phase 1~2).
+/// 도구 실행 결과를 받은 턴: 같은 내용을 또 생성하지 않도록 웹사이트를 재호출하지 않고
+/// 마무리 텍스트로 짧게 응답한다 (토큰/쿼터 절약, Phase 2 간소화).
+/// flatten이 현재 단일 턴 재전송 구조라 (assistant 히스토리 포함 X) 동일 답변이 반복되는 것을 방지.
+fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
+    let id = next_id();
+    if req.stream {
+        sse::stream_response(id, req.model.clone(), content.to_string(), vec![], "stop".to_string())
+    } else {
+        Json(json!({
+            "id": id,
+            "object": "chat.completion",
+            "created": sse::now_secs(),
+            "model": req.model,
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": content },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        }))
+        .into_response()
+    }
+}
+
+/// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
 async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     let id = next_id();
     let workspace =
@@ -260,7 +305,19 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     arc.record("USER", &user_text(req));
     let n = arc.bump_counter();
 
+    // 도구 결과를 받은 턴: 웹사이트를 재호출하지 않고 마무리
+    if req.messages.iter().any(|m| m.role == "tool") {
+        let content = "파일 작업이 완료되었습니다. 추가로 수정하거나 이어서 작업할 내용이 있으면 말씀해 주세요.";
+        arc.record("ASSISTANT", content);
+        return ack_response(app, req, content);
+    }
+
     let prompt = harness::flatten::build(req, &workspace, None);
+    // DEBUG: 실제 전송되는 프롬프트를 파일로 덤프 (패브를 위한 임시 로그)
+    let _ = std::fs::write(
+        std::path::PathBuf::from(std::env::temp_dir()).join("codebridge_flatten_debug.txt"),
+        &prompt,
+    );
     println!(
         "[browser] cwd={} prompt_chars={} msg_count={}",
         workspace_s,
@@ -269,11 +326,17 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     );
 
     let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
-    let outcome = match engine.send_and_await(&prompt).await {
+    // 모델 id에 "gemini"가 포함되면 Gemini로 초기 사이트를 결정한다
+    let site = automation::engine::Site::from_model(&req.model);
+    let outcome = match engine.send_and_await_site(&prompt, site).await {
         Ok(o) => o,
         Err(e) => automation::engine::SendOutcome {
             text: format!(
-                "(브릿지 오류) ChatGPT에 보내지 못했습니다: {e}. Chrome(전용 프로필, CDP {})과 ChatGPT 로그인 상태를 확인해 주세요.",
+                "(브릿지 오류) {}에 보내지 못했습니다: {e}. Chrome(전용 프로필, CDP {})과 로그인 상태를 확인해 주세요.",
+                match site {
+                    automation::engine::Site::ChatGpt => "ChatGPT",
+                    automation::engine::Site::Gemini => "Gemini",
+                },
                 app.cfg.automation.cdp_port
             ),
             limit_hit: false,
@@ -282,12 +345,13 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     };
     let mut raw = outcome.text;
     let mut blocks = outcome.code_blocks;
+    let mut active_site = site;
 
     // 응답이 잘렸으면(raw 기준) 한 번만 "이어서 계속"을 요청한다 (Phase 2, 쿼터 제한)
     if harness::flatten::has_unterminated_fence(&raw) {
         println!("[browser] unterminated fence detected; sending continuation");
         let cont_prompt = "이어서 계속 써 주세요. 파일을 나누어 출력해도 됩니다.";
-        match engine.send_and_await(cont_prompt).await {
+        match engine.send_and_await_site(cont_prompt, active_site).await {
             Ok(o2) => {
                 raw.push_str("\n\n(이어서 계속 받은 내용)\n\n");
                 raw.push_str(&o2.text);
@@ -299,7 +363,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     }
 
-    // 한도 배너 감지 또는 사용자 수동 트리거("지금 인수인계") → 인수인계 팩 생성 → 새 채팅 교체 → 재전송
+    // 한도 배너 감지 또는 사용자 수동 트리거("지금 인수인계") → 인수인계 팩 → 체인 순서로 재전송
     let manual_handover = user_text(req).contains("지금 인수인계");
     if outcome.limit_hit || manual_handover {
         let snap = harness::flatten::snapshot(&workspace);
@@ -319,23 +383,77 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         arc.record("HANDOVER", &pack);
         let fname = format!("handover-{id}.md");
         let saved = arc.write_artifact(&fname, &pack);
-        println!("[browser] limit banner hit -> handover saved to {saved:?}");
+        println!("[browser] handover pack saved to {saved:?} (site={active_site:?})");
 
         if app.cfg.handover.mode == "auto" {
-            match engine.rotate_new_chat().await {
-                Ok(_) => {
-                    arc.reset_counter();
-                    let retry = format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
-                    match engine.send_and_await(&retry).await {
-                        Ok(o2) => raw = o2.text,
-                        Err(e) => {
-                            raw = format!("(인수인계 재전송 실패: {e})\n\n{pack}");
+            let order = &app.cfg.handover.order;
+            println!("[browser] running handover chain: {order:?}");
+            let mut chain_done = false;
+            let mut last_err = String::new();
+            for step in order {
+                match step.as_str() {
+                    "same_site_new_chat" => {
+                        match engine.rotate_new_chat_site(active_site).await {
+                            Ok(_) => {
+                                arc.reset_counter();
+                                let retry =
+                                    format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
+                                match engine.send_and_await_site(&retry, active_site).await {
+                                    Ok(o2) => {
+                                        if o2.limit_hit {
+                                            last_err = "같은 사이트 새 채팅에서도 한도 유지".into();
+                                            continue; // 체인 다음 단계
+                                        }
+                                        raw = o2.text;
+                                        blocks = o2.code_blocks;
+                                        chain_done = true;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        last_err = format!("재전송 실패: {e}");
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                last_err = format!("새 채팅 교체 실패: {e}");
+                                continue;
+                            }
                         }
                     }
+                    "gemini" => {
+                        match engine.rotate_new_chat_site(automation::engine::Site::Gemini).await {
+                            Ok(_) => {
+                                active_site = automation::engine::Site::Gemini;
+                                arc.reset_counter();
+                                let retry =
+                                    format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
+                                match engine.send_and_await_site(&retry, active_site).await {
+                                    Ok(o2) => {
+                                        raw = o2.text;
+                                        blocks = o2.code_blocks;
+                                        chain_done = true;
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        last_err = format!("Gemini 재전송 실패: {e}");
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                last_err = format!("Gemini 새 채팅 교체 실패: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    other => {
+                        last_err = format!("미지의 order 항목: {other}");
+                    }
                 }
-                Err(e) => {
-                    raw = format!("{raw}\n\n(새 채팅 교체 실패: {e})");
-                }
+            }
+            if !chain_done {
+                raw.push_str(&format!("\n\n(인수인계 체인 실패: {last_err})"));
             }
         }
     }

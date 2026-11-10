@@ -29,6 +29,10 @@ pub struct HandoverCfg {
     /// 이 사용자 입력마다 아카이브에 기록
     #[serde(default)]
     pub archive: bool,
+    /// 인수인계 체인. 기본 ["same_site_new_chat", "gemini"]
+    /// 예: ["same_site_new_chat"] (같은 사이트 새 채팅만), ["gemini"] (바로 Gemini로)
+    #[serde(default)]
+    pub order: Vec<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -71,6 +75,9 @@ impl Config {
         }
         if cfg.handover.thread_soft_limit == 0 {
             cfg.handover.thread_soft_limit = 25;
+        }
+        if cfg.handover.order.is_empty() {
+            cfg.handover.order = vec!["same_site_new_chat".into(), "gemini".into()];
         }
         cfg
     }

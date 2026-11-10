@@ -170,6 +170,27 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - 이전 수동 Chrome을 쓰던 상태에서 `.chrome-profile` → `%APPDATA%\CodeBridge\chrome-profile`로 1회 이관(로그인 승계, 248MB).
 - **dev 모드 실측**: 앱 실행 → 전용 Chrome 자동 등장(CDP 9333) → `/v1/probe`: `login_required=false` → `bridge /v1/chat/completions`에 "안녕" 전송 → **실제 ChatGPT 응답 수신(finish=stop, 8.1s)** → 앱 종료 시 Chrome/브릿지/serve 모두 정리됨.
 
+## Gemini 연동 스파이크 (2026-11-10, 진행 중)
+
+### 검증된 것
+- 로그인: dedicated 프로필에서 `gemini.google.com/app` — composer 확인 (`div.ql-editor`, contenteditable).
+- **전송 버튼**: `button[aria-label*='보내']` (WebSocket/Wake on Synthetic events 금지 — `Element.click()` CDP 네이티브 경로 필수). 버튼은 텍스트 입력 후 ~1초 뒤 렌더링됨 (폴링 필수).
+- **응답 컨테이너**: `message-content`(.model-response-text) → `.markdown.markdown-main-panel` 구조. 완료 감지는 stop 버튼 소멸 + 텍스트 안정으로.
+- **스트리밍 완료 감지**: 텍스트 안정성 + stop 버튼 부재 방식은 ChatGPT와 동일하게 작동.
+
+### 발견된 문제/해결
+- **렌더된 UI에 ` ``` ` 마커 없음** (ChatGPT와 동일) → `pre` 블록 DOM 추출로 해결.
+- Chromium Element click 직접 사용 안 됨 → JS Rect + `page.click(Point)`로 우회.
+- 버튼은 텍스트 입력 후 ~1초 뒤에야 나타남 → 8초 폴링으로 안정화.
+- "Request timed out." (cdfa 내부 기본 타임아웃) → page 전체가 생성 중이거나 버튼 미렌더링일 때 발생. 재시도+폴링으로 대응.
+- 연속 요청으로 첫 성공 후 "1+1" 따위도 한동안 실패하던 현상: 이전 요청이 아직 생성 중("Analyzing..." 상태)인 채로 다음 요청이 들어가 전송 버튼이 교체/비활성화됨. **교훈: 생성 중 composer에 입력해도 send 버튼이 안 뜨므로, 시나리오별로 폴링+재시도 필수.**
+
+### 상태
+- 엔진(`engine.rs`) Site::ChatGpt/Site::Gemini 이중화, 모델 id에 "gemini" 포함 시 Gemini 라우팅.
+- `/v1/probe` — 양쪽 사이트 동시 로그인 감지 보고.
+- 폴링(~8초) + `page.click(Point)` 기반 전송.
+- 아직 실사용 코딩 E2E 안정화 진행 중 (생성 지연/타임아웃 반복 이슈).
+
 ## 남은 Phase 0/1 작업
 
 - [x] ~~CDP(chromiumoxide) 브라우저 자동화 스파이크~~ → **2026-11-10 완료** (PING/PING2 전송+응답 추출 검증)

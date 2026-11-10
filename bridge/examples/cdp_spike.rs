@@ -138,6 +138,327 @@ async fn code_probe(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn gemini_hints(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const all = [...document.querySelectorAll('button, div[role="button"]')];
+        const hit = all.filter(e => {
+            const s = ((e.getAttribute('aria-label')||'') + ' ' + (e.innerText||'')).toLowerCase();
+            return /전송|보내|send|마이크|음성|mic|voice|중지|stop|첨부|attach|plus|선호/.test(s);
+        });
+        return JSON.stringify(hit.map(e => ({
+            tag: e.tagName,
+            aria: e.getAttribute('aria-label'),
+            testid: e.getAttribute('data-testid'),
+            text: (e.innerText || '').slice(0, 60),
+            cls: (e.className || '').toString().slice(0, 60)
+        })), null, 1);
+    })()"#;
+    println!("[gemini_hints]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_insert(page: &Page, msg: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let clear = r#"(() => {
+        const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"], div[contenteditable="true"]');
+        if (!el) return 'missing';
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+        const ok = document.execCommand('insertText', false, 'PING이라고만 답해 주세요.');
+        return ok ? 'inserted' : 'failed';
+    })()"#;
+    let r = eval_str(page, clear).await?;
+    println!("[gemini_insert] insert = {r}");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let js = r#"(() => {
+        const all = [...document.querySelectorAll('button, div[role="button"]')];
+        return JSON.stringify(all.filter(e => {
+            const s = ((e.getAttribute('aria-label')||'') + ' ' + (e.innerText||'')).toLowerCase();
+            return /전송|send|발송|arrow|음성|mic|stop|중지/.test(s);
+        }).map(e => ({
+            tag: e.tagName,
+            aria: e.getAttribute('aria-label'),
+            testid: e.getAttribute('data-testid'),
+            text: (e.innerText || '').slice(0, 40),
+            cls: (e.className || '').toString().slice(0, 60)
+        })), null, 1);
+    })()"#;
+    println!("[gemini_insert]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_big_insert(page: &Page, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // 먼저 컴포저를 비운다
+    let clear = format!(
+        r#"(() => {{
+            const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+            if (!el) return 'missing';
+            el.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+            return 'cleared';
+        }})()"#,
+    );
+    println!("[gemini_big_insert] clear = {}", eval_str(page, &clear).await?);
+    let insert = format!(
+        r#"(() => {{
+            const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+            if (!el) return 'missing';
+            el.focus();
+            const ok = document.execCommand('insertText', false, {});
+            return 'insert-' + ok;
+        }})()"#,
+        js_string(prompt),
+    );
+    println!("[gemini_big_insert] insert = {}", eval_str(page, &insert).await?);
+    // 엔진이 하는 것과 동일하게 InputEvent 디스패치 후 상태를 본다
+    let _ = eval_str(
+        page,
+        r#"(() => {
+            const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+            if (!el) return 'missing';
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ' ' }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'dispatched';
+        })()"#,
+    )
+    .await?;
+    for i in 0..4 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let st = eval_str(
+            page,
+            r#"(() => JSON.stringify({
+                composerLen: (document.querySelector('div.ql-editor') || {}).innerText?.length || 0,
+                hasSendBtn: !!document.querySelector("button[aria-label*='보내']"),
+                sendLike: [...document.querySelectorAll('button')].map(b => b.getAttribute('aria-label')).filter(l => l && /보내|Send|send|전송/.test(l))
+            }))()"#,
+        )
+        .await?;
+        println!("[gemini_big_insert] t{i} {st}");
+    }
+    Ok(())
+}
+
+async fn gemini_send(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let rect_json = eval_str(
+        page,
+        r#"(() => {
+            const btn = document.querySelector("button[aria-label='메시지 보내기'], button[aria-label='Send message'], button[aria-label*='보내기']");
+            if (!btn) return '{}';
+            const r = btn.getBoundingClientRect();
+            return JSON.stringify({ x: r.x, y: r.y, w: r.width, h: r.height, disabled: btn.disabled });
+        })()"#,
+    )
+    .await?;
+    println!("[gemini_send] rect = {rect_json}");
+    let v: serde_json::Value = serde_json::from_str(&rect_json).unwrap_or(serde_json::json!({}));
+    if v.get("x").is_none() {
+        println!("[gemini_send] send button not found");
+        return Ok(());
+    }
+    let cx = v["x"].as_f64().unwrap_or(0.0) + v["w"].as_f64().unwrap_or(0.0) / 2.0;
+    let cy = v["y"].as_f64().unwrap_or(0.0) + v["h"].as_f64().unwrap_or(0.0) / 2.0;
+    println!("[gemini_send] clicking at ({cx:.0}, {cy:.0})");
+    page.click(chromiumoxide::layout::Point::new(cx, cy)).await?;
+    // 응답 완료까지 대기: model 응답 텍스트 안정 감시 (DilResponseRoot 대신 Gemini 컨테이너)
+    let stable_needed = 4;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut last = String::new();
+    let mut stable = 0usize;
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let cur = eval_str(
+            page,
+            r#"(() => {
+                const els = document.querySelectorAll('[data-message-author-role="model"], .model-response-text, message-content, [class*="response-container"]');
+                const el = els[els.length - 1];
+                return el ? el.innerText : '';
+            })()"#,
+        ).await.unwrap_or_default();
+        let stop = eval_str(
+            page,
+            r#"String(!!document.querySelector("button[aria-label*='중지'], button[aria-label*='Stop'], button[aria-label*='stop']"))"#,
+        ).await.unwrap_or_else(|_| "false".into());
+        if cur == last && !cur.is_empty() && stop == "false" {
+            stable += 1;
+        } else if cur != last {
+            stable = 0;
+        }
+        last = cur;
+        if stable >= stable_needed { break; }
+    }
+    println!("[gemini_send] reply (first 300):\n{}", &last[..last.len().min(300)]);
+    Ok(())
+}
+
+async fn gemini_reply_probe(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const out = [];
+        const els = document.querySelectorAll('*');
+        for (const el of els) {
+            if (el.children.length > 2) continue;
+            const t = (el.innerText || '').trim();
+            if (t === 'PING' && el.offsetWidth > 0) {
+                const chain = [];
+                let n = el;
+                for (let k = 0; k < 5 && n; k++) {
+                    chain.push({ tag: n.tagName, cls: (n.className || '').toString().slice(0, 60), testid: n.getAttribute('data-testid'), role: n.getAttribute('role'), aria: n.getAttribute('aria-label') });
+                    n = n.parentElement;
+                }
+                out.push(chain);
+            }
+        }
+        return JSON.stringify(out, null, 1).slice(0, 5000);
+    })()"#;
+    println!("[gemini_reply]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_enter(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let before = eval_str(
+        page,
+        r#"(document.querySelector('div.ql-editor') ? document.querySelector('div.ql-editor').innerText : 'no-el')"#,
+    ).await?;
+    println!("[gemini_enter] composer before = {before}");
+    let r = eval_str(
+        page,
+        r#"(() => {
+            const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+            if (!el) return 'missing';
+            el.focus();
+            for (const type of ['keydown', 'keypress', 'keyup']) {
+                el.dispatchEvent(new KeyboardEvent(type, {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}));
+            }
+            return 'enter-dispatched';
+        })()"#,
+    ).await?;
+    println!("[gemini_enter] {r}");
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let tail = eval_str(
+        page,
+        r#"(document.body ? document.body.innerText.slice(-400) : '')"#,
+    ).await?;
+    println!("[gemini_enter] bodyTail =\n{tail}");
+    Ok(())
+}
+
+async fn gemini_native_click(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let el = page.find_element("button[aria-label*='보내']").await?;
+    el.click().await?;
+    println!("[gemini_native_click] clicked via Element handle");
+    for _ in 0..15 {
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    }
+    let tail = eval_str(
+        page,
+        r#"(document.body ? document.body.innerText.slice(-400) : '')"#,
+    ).await?;
+    println!("[gemini_native_click] bodyTail =\n{tail}");
+    Ok(())
+}
+
+async fn gemini_input_events(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let r = eval_str(
+        page,
+        r#"(() => {
+            const el = document.querySelector('div.ql-editor, rich-textarea div[contenteditable="true"]');
+            if (!el) return 'missing';
+            el.focus();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('delete', false, null);
+            const ok = document.execCommand('insertText', false, 'PING이라고만 답해 주세요.');
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ' ' }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+            return 'dispatched insert=' + ok;
+        })()"#,
+    )
+    .await?;
+    println!("[gemini_input_events] {r}");
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    let r2 = eval_str(
+        page,
+        r#"(() => {
+            const btn = document.querySelector("button[aria-label='메시지 보내기'], button[aria-label='Send message'], button[aria-label*='보내기']");
+            return JSON.stringify({ disabled: btn.disabled, ariaDisabled: btn.getAttribute('aria-disabled'), cls: btn.className.slice(0,120) });
+        })()"#,
+    )
+    .await?;
+    println!("[gemini_input_events] send button state = {r2}");
+    Ok(())
+}
+
+async fn gemini_selector_test(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const a = document.querySelector("button[aria-label*='보내']");
+        const b = document.querySelector("button[aria-label^='보내']");
+        const c = document.querySelector("button[aria-label='메시지 보내기']");
+        const d = document.querySelectorAll("button[aria-label]");
+        const labs = [...d].map(x => x.getAttribute('aria-label'));
+        return JSON.stringify({ a: !!a, b: !!b, c: !!c, sendLike: labs.filter(l => l && l.includes('보내')) }, null, 1);
+    })()"#;
+    println!("[gemini_selector_test]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_inspect(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const btn = document.querySelector("button[aria-label='메시지 보내기'], button[aria-label='Send message'], button[aria-label*='보내기']");
+        if (!btn) return 'send button not found';
+        const r = btn.getBoundingClientRect();
+        const cx = Math.round(r.x + r.width / 2), cy = Math.round(r.y + r.height / 2);
+        const at = document.elementFromPoint(cx, cy);
+        return JSON.stringify({
+            outer: btn.outerHTML.slice(0, 600),
+            rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+            center: { cx, cy },
+            atTag: at ? at.tagName : null,
+            atCls: at ? (at.className || '').toString().slice(0, 80) : null,
+            atOuter: at ? at.outerHTML.slice(0, 400) : null,
+            composerText: (document.querySelector('div.ql-editor') ? document.querySelector('div.ql-editor').innerText : null)
+        }, null, 1);
+    })()"#;
+    println!("[gemini_inspect]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_dump(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const all = [...document.querySelectorAll('button, div[role="button"]')];
+        return JSON.stringify(all.map(e => ({
+            tag: e.tagName,
+            aria: e.getAttribute('aria-label'),
+            testid: e.getAttribute('data-testid'),
+            text: (e.innerText || '').slice(0, 40),
+            cls: (e.className || '').toString().slice(0, 50)
+        })), null, 1);
+    })()"#;
+    println!("[gemini_dump]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
+async fn gemini_probe(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const q = (s) => document.querySelectorAll(s).length;
+        const txt = (e) => (e ? e.innerText : '').trim().slice(0, 200);
+        const composer = document.querySelector('div.ql-editor, div[contenteditable="true"], textarea, rich-textarea div[contenteditable="true"]');
+        return JSON.stringify({
+            title: document.title,
+            url: location.href,
+            composer: !!composer,
+            composerCls: composer ? (composer.className || '').slice(0, 80) : null,
+            buttons: [...document.querySelectorAll('button')].slice(0, 20).map(b => ({
+                aria: b.getAttribute('aria-label'),
+                testid: b.getAttribute('data-testid'),
+                text: (b.innerText || '').slice(0, 30)
+            })),
+            bodyTail: (document.body ? document.body.innerText : '').slice(-400)
+        }, null, 1);
+    })()"#;
+    println!("[gemini]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
 async fn dom(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
     let js = r#"(() => {
         const c = (s) => document.querySelectorAll(s).length;
@@ -292,7 +613,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // 기존 chatgpt 탭 재사용 → 없으면 새로 연다 (핸들러가 대상 목록을 수신할 때까지 짧게 재시도)
+    // 기존 chatgpt/gemini 탭 재사용 → 없으면 새로 연다 (핸들러가 대상 목록을 수신할 때까지 짧게 재시도)
     let mut pages = browser.pages().await.unwrap_or_default();
     for _ in 0..12 {
         if !pages.is_empty() {
@@ -306,21 +627,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut fallback = None;
     for p in pages {
         let u = p.url().await.ok().flatten().unwrap_or_default();
-        if u.contains("chatgpt.com/c/") {
-            // 대화 탭 우선 (자동화 대상)
-            target_page = Some(p);
-            break;
-        }
-        if u.contains("chatgpt") || u.contains("auth") {
-            fallback = Some(p);
+        if mode.starts_with("gemini") {
+            if u.contains("gemini.google.com") {
+                target_page = Some(p);
+                break;
+            }
+        } else {
+            if u.contains("chatgpt.com/c/") {
+                target_page = Some(p);
+                break;
+            }
+            if u.contains("chatgpt") || u.contains("auth") {
+                fallback = Some(p);
+            }
         }
     }
     let target_page = target_page.or(fallback);
     let page = match target_page {
         Some(p) => p,
         None => {
-            println!("[cdp_spike] no chatgpt tab; opening one");
-            browser.new_page("https://chatgpt.com/").await?
+            let url = if mode.starts_with("gemini") { "https://gemini.google.com/" } else { "https://chatgpt.com/" };
+            println!("[cdp_spike] no tab found; opening {url}");
+            browser.new_page(url).await?
         }
     };
 
@@ -328,6 +656,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "probe" => probe(&page).await?,
         "buttons" => buttons(&page).await?,
         "dom" => dom(&page).await?,
+        "gemini" => gemini_probe(&page).await?,
+        "gemini2" => gemini_hints(&page).await?,
+        "gemini3" => gemini_insert(&page, "PING이라고만 답해 주세요.").await?,
+        "gemini4" => gemini_dump(&page).await?,
+        "gemini5" => gemini_send(&page).await?,
+        "gemini6" => gemini_reply_probe(&page).await?,
+        "gemini7" => gemini_enter(&page).await?,
+        "gemini8" => gemini_inspect(&page).await?,
+        "gemini12" => {
+            let prompt = std::fs::read_to_string(std::env::temp_dir().join("codebridge_flatten_debug.txt"))
+                .unwrap_or_else(|_| "file not found".to_string());
+            gemini_big_insert(&page, &prompt).await?
+        }
+        "gemini10" => gemini_native_click(&page).await?,
+        "gemini11" => gemini_selector_test(&page).await?,
         "code" => code_probe(&page).await?,
         "find" => find(&page).await?,
         "send" => {
