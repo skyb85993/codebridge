@@ -62,7 +62,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "CodeBridge"
+      "shortcutName": "CodeBridge",
+      "artifactName": "CodeBridge-Setup-${version}.${ext}"
     }
   },
   "allowScripts": {
