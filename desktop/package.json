@@ -53,7 +53,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "codebridge",
+        "owner": "skyb85993",
         "repo": "codebridge"
       }
     ],
