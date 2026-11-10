@@ -277,12 +277,31 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                 app.cfg.automation.cdp_port
             ),
             limit_hit: false,
+            code_blocks: Vec::new(),
         },
     };
     let mut raw = outcome.text;
+    let mut blocks = outcome.code_blocks;
 
-    // 한도 배너 감지 → 인수인계 팩 생성 → 새 채팅 교체 → 팩 재전송 (Phase 2, F2.17~F2.19)
-    if outcome.limit_hit {
+    // 응답이 잘렸으면(raw 기준) 한 번만 "이어서 계속"을 요청한다 (Phase 2, 쿼터 제한)
+    if harness::flatten::has_unterminated_fence(&raw) {
+        println!("[browser] unterminated fence detected; sending continuation");
+        let cont_prompt = "이어서 계속 써 주세요. 파일을 나누어 출력해도 됩니다.";
+        match engine.send_and_await(cont_prompt).await {
+            Ok(o2) => {
+                raw.push_str("\n\n(이어서 계속 받은 내용)\n\n");
+                raw.push_str(&o2.text);
+                blocks.extend(o2.code_blocks);
+            }
+            Err(e) => {
+                raw.push_str(&format!("\n\n(이어서 계속 요청 실패: {e})"));
+            }
+        }
+    }
+
+    // 한도 배너 감지 또는 사용자 수동 트리거("지금 인수인계") → 인수인계 팩 생성 → 새 채팅 교체 → 재전송
+    let manual_handover = user_text(req).contains("지금 인수인계");
+    if outcome.limit_hit || manual_handover {
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
             .messages
@@ -334,7 +353,18 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
 
     arc.record("ASSISTANT", &raw);
 
-    let files = translate::lenient::parse(&raw);
+    // 코드 블록이 DOM에서 추출되면 그것을 관대 파서에 넣는다 (raw는 렌더된 텍스트라 ```가 없음).
+    // 추출 실패 시 raw 자체를 파싱하는 폴백을 유지한다.
+    let parse_src = if blocks.is_empty() {
+        raw.clone()
+    } else {
+        blocks
+            .iter()
+            .map(|c| format!("```lua\n{c}\n```"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    let files = translate::lenient::parse(&parse_src);
     let (calls, issues) = translate::lenient::to_tool_calls(&files);
     let mut text = raw.clone();
     if !issues.is_empty() {

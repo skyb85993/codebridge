@@ -21,7 +21,7 @@ const NEW_CHAT_SEL: &str =
     "button[aria-label='새 채팅'], button[aria-label='New chat'], button[data-testid='create-new-chat-button']";
 
 /// profiles.toml [profiles.chatgpt].limit_texts와 동기화 (한/영)
-pub const LIMIT_TEXTS: &[&str] = &["limit reached", "usage cap", "메시지 한도", "사용 한도"];
+pub const LIMIT_TEXTS: &[&str] = &["limit reached", "usage cap", "rate limit", "메시지 한도", "사용 한도"];
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -44,6 +44,8 @@ impl std::fmt::Display for EngineError {
 pub struct SendOutcome {
     pub text: String,
     pub limit_hit: bool,
+    /// 마지막 assistant 응답에 포함된 코드 블록들 (pre.innerText, DOM 순서)
+    pub code_blocks: Vec<String>,
 }
 
 fn js_string(s: &str) -> String {
@@ -302,8 +304,23 @@ impl Engine {
             return Err(EngineError::Timeout);
         }
 
+        // 마지막 assistant 컨테이너의 코드 블록만 추출 (이전 대화의 코드 블록은 제외)
+        let blocks_json = eval_str(
+            &page,
+            r#"(() => {
+                const roots = [...document.querySelectorAll('[class*="DilResponseRoot"], [class*="entity-prose-inset"]')];
+                const root = roots[roots.length - 1];
+                if (!root) return '[]';
+                return JSON.stringify([...root.querySelectorAll('pre')].map(e => e.innerText));
+            })()"#,
+        )
+        .await
+        .unwrap_or_else(|_| "[]".to_string());
+        let code_blocks: Vec<String> =
+            serde_json::from_str(&blocks_json).unwrap_or_default();
+
         let limit_hit = self.is_limit_banner(&page).await;
         drop(browser); // 브라우저는 유지 (로그인 세션)
-        Ok(SendOutcome { text: last, limit_hit })
+        Ok(SendOutcome { text: last, limit_hit, code_blocks })
     }
 }

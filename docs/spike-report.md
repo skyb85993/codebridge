@@ -137,23 +137,19 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
   - **minor**: 인증 헤더가 모든 요청에 주입되던 것을 `127.0.0.1:7891`로 제한 / 실패 화면 "다시 시도"가 data URL reload만 하던 것을 `codebridge://retry` will-navigate로 서비스 재시작+재부팅 / 브릿지가 cwd의 일반 `config.toml`을 읽던 것 → `CODEBRIDGE_CONFIG` 환경변수 + 필드별 serde 기본값 + 번들 설정(`resources/bridge/config.toml`) 우선 적용 / 문서 오타(산출物), README 로컬 절대경로·체크리스트 모순, 모델 id 규칙 예시(gpt-5), profiles.toml `인증` 제거, .gitignore 패턴(/Serverday/StarterPlayer)
 - 저장소: git init → 소스만 커밋 → 리뷰 → 이슈 수정 → **reflog 없는 단일 커밋으로 정리** (`ee45d49`)
 
-## Phase 2 — 실연결 엔진 + 인수인계 자동화 v1 (2026-11-10, 구현·검증 완료)
+## Phase 2 — 실연결 엔진 + 인수인계 자동화 v1 (2026-11-10, 완료 — 실전 검증)
 
-### 구현
-- **자동화 엔진** (`bridge/src/automation/engine.rs`): CDP 연결 → 대화 탭 재사용(chatgpt.com/c/) → 컴포저 비우기 → `insertText` 입력 → `aria-label="보내기"` 클릭 → 마지막 assistant 텍스트의 안정성+stop 버튼 감지로 완료 판정 → 응답 추출. 한도 배너 감지(`LIMIT_TEXTS`), "새 채팅"(aria-label='새 채팅') 교체 함수 포함.
-- **flatten** (`bridge/src/harness/flatten.rs`): 요청→단일 프롬프트 (규약 헤더 + 최신 user 요청 + 도구 결과(오래된 것부터 예산 축소) + 워크스페이스 스냅샷 경로+크기, 기본 예산 12k). 단위 테스트 3개.
-- **잘림 처리**: `has_unterminated_fence()` — 미폐쇄 코드펜스 감지 시 해당 블록은 승격하지 않고 "이어서 계속" 안내 첨부 (잘린 파일 덮어쓰기 방지).
-- **아카이브** (`bridge/src/archive.rs`): `%APPDATA%\CodeBridge\bridge-archive\journal-YYYYMMDD.md`에 요청/응답 전문 + `state.json`에 프로젝트별 메시지 카운터. 날짜는 Hinnant civil_from_days로 정확 계산(+단위 테스트).
-- **한도 사전 감지**: 프로젝트별 메시지 카운터 **25개**(기본 `[handover] thread_soft_limit`) 도달 시 답변에 경고 문구 첨부.
-- **한도 확정 감지 + 인수인계 자동화 v1**: 응답/페이지에 한도 배너 텍스트 발견 시 → 인수인계 팩 생성(프로젝트/마지막 요청/스냅샷/도구 결과/규약 헤더, 로컬 LLM 미사용) → `handover-<id>.md` 저장 → **"새 채팅" 교체 → 팩을 첫 메시지로 재전송 → 루프 재개** (`[handover] mode="auto"`).
-- 단위 테스트 **21개** (관대 파서 + flatten + handover + 날짜 계산).
-- `config.toml`: `[automation] mode="browser"` + `cdp_port`, `[handover] mode/thread_soft_limit` 확장.
+### 구현 (완료)
+- **자동화 엔진** (`bridge/src/automation/engine.rs`): CDP 연결 → 대화 탭 재사용(chatgpt.com/c/) → 컴포저 비우기 → `insertText` 입력 → `aria-label="보내기"` 클릭 → 마지막 assistant 텍스트 안정성+stop 버튼으로 완료 판정. 응답의 **코드 블록을 DOM에서 직접 추출**(DilResponseRoot 내 `pre`)해서 ` ``` ` 마커가 없는 현행 UI 문제 해결. 한도 배너 감지(`LIMIT_TEXTS` + `rate limit`), "새 채팅" 교체 포함.
+- **잘림 처리**: `has_unterminated_fence()` — 미폐쇄 펜스 감지 시 승격 금지 + "이어서 계속" **자동 재전송(최대 1회)** 추가.
+- **수동 인수인계**: 사용자 메시지에 "지금 인수인계" 포함 시 한도 배너와 무관하게 강제 인수인계 플로우 실행.
+- **한도 사전/확정 감지**: 카운터(25개 기본) 경고 + 페이지 텍스트 배너 매칭("limit reached"/"usage cap"/"rate limit"/"메시지 한도"/"사용 한도").
+- **아카이브** (`bridge/src/archive.rs`): `%APPDATA%\CodeBridge\bridge-archive\journal-*.md` + `state.json` 카운터.
+- flatten, lenient 파서(주석접두어+단어경계), 테스트 **21개**.
 
-### 실 ChatGPT 검증 (로그인 상태, 전용 크롬 9333)
-- "안녕이라고만 답해 주세요" → 응답 수신 (finish=stop, 7.7s)
-- "반갑습니다라고만 답해 주세요" → 응답 수신 (finish=stop, 14.5s)
-- 아카이브에 USER/ASSISTANT 기록 확인, 카운터 1→2 증가 확인, 파일명 날짜 정확성 확인
-- (메시지 3건 소모: PING/PING2/안녕/반갑습니다)
+### 실전 E2E 검증 (2026-11-10, 실 ChatGPT)
+- 실사용 요청 "로블록스 미니 게임 스켈레톤…" → 실제 응답 → **DOM에서 코드 블록 2개 추출 → 관대 파서 승격 → opencode write 2건 실행** → `ServerScriptService/GameManager.lua`(3,856B) / `HUD.client.lua`(2,499B) **실제 생성 확인**.
+- **핸드오버 라이브 테스트**: "지금 인수인계를 실행해서…" → 팩 저장(`handover-chatcmpl-codebridge-0004.md`, 2.6KB) → **새 채팅 교체 → 팩 재전송** → 새 스레드에서 응답에 코드 블록 2개 → write tool_calls 2건, 카운터 리셋 확인. **인수인계 체인 전체 실증 완료.**
 
 ## headless 숨김 실행 스파이크 (2026-11-10, 실패 → 폴백)
 

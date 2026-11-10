@@ -117,6 +117,27 @@ async fn find(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn code_probe(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
+    let js = r#"(() => {
+        const dump = (sel) => [...document.querySelectorAll(sel)].map(e => ({
+            cls: (e.className || '').toString().slice(0, 80),
+            tag: e.tagName,
+            testid: e.getAttribute('data-testid'),
+            lang: e.getAttribute('data-language'),
+            textHead: (e.innerText || '').slice(0, 120)
+        }));
+        return JSON.stringify({
+            pre: dump('pre'),
+            code: dump('code'),
+            codeblock: dump('[class*="code-block"], [class*="CodeBlock"], [data-testid*="code"]'),
+            my4code: dump('.my-4 code'),
+            firstPreInner: (() => { const p = document.querySelector('pre'); return p ? p.innerText.slice(0, 200) : null })()
+        }, null, 1);
+    })()"#;
+    println!("[code]\n{}", eval_str(page, js).await?);
+    Ok(())
+}
+
 async fn dom(page: &Page) -> Result<(), Box<dyn std::error::Error>> {
     let js = r#"(() => {
         const c = (s) => document.querySelectorAll(s).length;
@@ -307,6 +328,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "probe" => probe(&page).await?,
         "buttons" => buttons(&page).await?,
         "dom" => dom(&page).await?,
+        "code" => code_probe(&page).await?,
         "find" => find(&page).await?,
         "send" => {
             if !wait_for_composer(&page, 30_000).await? {

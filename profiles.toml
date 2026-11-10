@@ -40,4 +40,4 @@ message_container = "div[class*='DilResponseRoot']"
 stream_poll_ms = 300
 stable_needed = 4
 timeout_ms = 180000
-limit_texts = ["limit reached", "usage cap", "메시지 한도", "사용 한도"]
+limit_texts = ["limit reached", "usage cap", "rate limit", "메시지 한도", "사용 한도"]
