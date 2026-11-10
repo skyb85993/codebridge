@@ -31,6 +31,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(api::health))
         .route("/v1/models", get(api::list_models))
+        .route("/v1/probe", get(api::probe_web))
         .route("/v1/chat/completions", post(api::chat_completions))
         .with_state(AppState { cfg: Arc::new(cfg) });
 

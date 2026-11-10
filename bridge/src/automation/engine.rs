@@ -192,7 +192,27 @@ impl Engine {
         Ok(())
     }
 
-    /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.
+    /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용).
+    pub async fn probe(&self) -> Result<(bool, String, String), EngineError> {
+        let browser = self.spawn_handler().await?;
+        let page = self.find_chatgpt_tab(&browser).await?;
+        let js = format!(
+            r#"(() => JSON.stringify({{
+                composer: !!document.querySelector({sel}),
+                url: location.href,
+                title: document.title
+            }}))()"#,
+            sel = js_string(COMPOSER_SEL)
+        );
+        let raw = eval_str(&page, &js).await?;
+        drop(browser);
+        let v: Value = serde_json::from_str(&raw).map_err(|e| EngineError::Page(e.to_string()))?;
+        let composer = v.get("composer").and_then(|x| x.as_bool()).unwrap_or(false);
+        let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        Ok((composer, url, title))
+    }
+
     pub async fn send_and_await(&self, prompt: &str) -> Result<SendOutcome, EngineError> {
         let browser = self.spawn_handler().await?;
         let page = self.find_chatgpt_tab(&browser).await?;

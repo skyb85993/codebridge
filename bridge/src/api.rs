@@ -223,6 +223,25 @@ pub async fn chat_completions(
     }
 }
 
+/// 전용 Chrome(9333)/ChatGPT 상태 점검용 — 앱이 로그인 여부를 표시할 때 사용한다.
+pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
+    let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
+    match engine.probe().await {
+        Ok((composer, url, title)) => Json(json!({
+            "ok": true,
+            "composer": composer,
+            "login_required": !composer,
+            "url": url,
+            "title": title
+        })),
+        Err(e) => Json(json!({
+            "ok": false,
+            "login_required": true,
+            "error": e.to_string()
+        })),
+    }
+}
+
 fn msg_tool_text(m: &ChatMessage) -> String {
     m.content
         .as_ref()

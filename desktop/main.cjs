@@ -3,10 +3,11 @@
  *
  * 역할:
  *   1) 사용자 프로젝트 폴더 선택 (최초 실행 시)
- *   2) Rust 브릿지(codebridge-bridge.exe)를 자식 프로세스로 실행 (127.0.0.1:9224)
- *   3) opencode serve(v2 API+웹 UI)를 자식 프로세스로 실행 (127.0.0.1:7891)
- *   4) 세션 Basic 인증을 창의 모든 요청에 주입 후 opencode 웹 UI 로드
- *   5) 트레이 메뉴(프로젝트 재선택/브릿지 재시작/로그/종료) + 정리(자식 프로세스 종료)
+ *   2) 전용 Chrome(CDP 9333)을 자동 실행한다 — 사용자가 수동으로 크롬을 열 필요가 없다
+ *   3) Rust 브릿지(codebridge-bridge.exe)를 자식 프로세스로 실행 (127.0.0.1:9224, browser 모드)
+ *   4) opencode serve(v2 API+웹 UI)를 자식 프로세스로 실행 (127.0.0.1:7891)
+ *   5) 세션 Basic 인증을 창의 모든 요청에 주입 후 opencode 웹 UI 로드
+ *   6) 트레이 메뉴(창 열기/프로젝트 재선택/브릿지·Chrome 재시작/로그인 상태/종료) + 정리(자식 프로세스 종료)
  */
 const {
   app,
@@ -38,14 +39,28 @@ const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
 
 const SERVE_PORT = 7891;
 const BRIDGE_PORT = 9224;
+const CDP_PORT = 9333;
+
+const CHROME_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+];
+const CHROME_PROFILE = path.join(DATA_DIR, 'chrome-profile');
 
 let mainWindow = null;
 let tray = null;
 let bridgeProc = null;
 let opencodeProc = null;
+let chromeProc = null;
 let servePassword = '';
 let projectDir = '';
 let appQuitting = false;
+let probeTimer = null;
+let loginRequired = false;
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -113,6 +128,10 @@ function spawnBridge(cwd) {
   });
 }
 
+function findBrowserExe() {
+  return CHROME_CANDIDATES.find((p) => fs.existsSync(p)) || null;
+}
+
 function appendLog(name, text) {
   try {
     ensureDir(LOG_DIR);
@@ -171,6 +190,58 @@ function httpGet(pathname, password, timeoutMs = 3000) {
   });
 }
 
+function httpGetRaw(port, pathname, timeoutMs = 2500) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path: pathname, method: 'GET', timeout: timeoutMs },
+      (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function waitForChrome(timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await httpGetRaw(CDP_PORT, '/json/version', 2000);
+      if (r.status === 200) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function probeLoginOnce() {
+  try {
+    const r = await httpGetRaw(BRIDGE_PORT, '/v1/probe', 6000);
+    if (r.status === 200) {
+      try {
+        const v = JSON.parse(r.body);
+        loginRequired = !!v.login_required;
+        if (tray) tray.setToolTip(loginRequired ? 'CodeBridge — ChatGPT 로그인 필요' : 'CodeBridge Desktop — 로그인됨');
+        appendLog('probe', `[probe] login_required=${loginRequired} url=${v.url}\n`);
+        return;
+      } catch {}
+    }
+  } catch {}
+  loginRequired = true;
+  if (tray) tray.setToolTip('CodeBridge — Chrome/브릿지 연결 대기 중');
+}
+
+function startProbePolling() {
+  if (probeTimer) clearInterval(probeTimer);
+  probeTimer = setInterval(probeLoginOnce, 8000);
+  // 즉시 1회
+  probeLoginOnce();
+}
+
 async function waitForOpencode(timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -215,8 +286,12 @@ async function startServices() {
   }
   ensureDir(projectDir);
   ensureOpencodeJson(projectDir);
+  // 전용 Chrome을 먼저 띄운다 (가시 창 — 필요하면 사용자가 로그인/확인할 수 있게)
+  spawnChrome();
+  waitForChrome().then((ok) => appendLog('chrome', `[chrome] cdp_ready=${ok}\n`));
   spawnBridge(projectDir);
   spawnOpencode(projectDir);
+  startProbePolling();
   return true;
 }
 
@@ -251,7 +326,40 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-  mainWindow.loadURL(splash('CodeBridge를 준비하는 중…', '브릿지와 opencode 서버를 띄우고 있습니다.'));
+  mainWindow.loadURL(splash('CodeBridge를 준비하는 중…', '전용 Chrome(ChatGPT)과 브릿지, opencode 서버를 띄우고 있습니다. Chrome 창에서 ChatGPT에 한 번 로그인해 두면 이후에는 앱이 자동으로 띄웁니다.'));
+}
+
+/**
+ * 전용 Chrome을 자동 실행한다 (가시 창, CDP 9333, 전용 프로필).
+ * 이미 같은 프로필로 Chrome이 실행 중이면 새 창만 열리고 기존 인스턴스를 재사용한다.
+ */
+function spawnChrome() {
+  const exe = findBrowserExe();
+  if (!exe) {
+    console.error('[chrome] no browser executable found in candidates');
+    appendLog('chrome', '[chrome] not found\n');
+    return null;
+  }
+  ensureDir(CHROME_PROFILE);
+  const args = [
+    `--remote-debugging-port=${CDP_PORT}`,
+    `--user-data-dir=${CHROME_PROFILE}`,
+    'https://chatgpt.com/',
+  ];
+  console.log('[chrome] spawn', exe);
+  const proc = spawn(exe, args, {
+    env: process.env,
+    stdio: 'ignore',
+    windowsHide: false,
+    detached: true,
+  });
+  proc.on('error', (e) => {
+    console.error('[chrome] spawn error', e);
+    appendLog('chrome', `[chrome] spawn error: ${e}\n`);
+  });
+  chromeProc = proc;
+  appendLog('chrome', `[chrome] spawn pid=${proc.pid} exe=${exe}\n`);
+  return proc;
 }
 
 function killChild(proc) {
@@ -297,6 +405,14 @@ function buildTray() {
       click: () => {
         if (!projectDir) return;
         spawnBridge(projectDir);
+      },
+    },
+    {
+      label: '전용 Chrome 재시작',
+      click: () => {
+        killChild(chromeProc);
+        chromeProc = null;
+        spawnChrome();
       },
     },
     { type: 'separator' },
@@ -376,7 +492,9 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     appQuitting = true;
+    if (probeTimer) clearInterval(probeTimer);
     killChild(bridgeProc);
     killChild(opencodeProc);
+    killChild(chromeProc);
   });
 }
