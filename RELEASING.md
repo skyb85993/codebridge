@@ -9,7 +9,9 @@
   - 앱 시작 시 1회 + 트레이 메뉴 "업데이트 확인"으로 수동 확인 가능
   - GitHub Releases의 `latest`를 기준으로 `latest.yml`을 확인
   - 코드 서명 없음 → SmartScreen 경고가 뜰 수 있다
-- 배포 채널: 미설정 (GitHub 저장소/Release를 사용자가 만들어야 동작)
+- 배포 채널: **skyb85993/codebridge (GitHub Releases) · v0.1.0부터 릴리즈**
+- 설치된 앱은 다음 실행 시 자동으로 업데이트를 확인·다운로드·설치한다
+  (설치 파일 실행 없이 인앱 업데이트).
 
 ## 릴리즈 순서
 
