@@ -28,21 +28,27 @@ pub async fn health() -> &'static str {
     "ok: CodeBridge bridge"
 }
 
-/// OpenAI 호환 모델 목록. (Phase 0: mock만, Phase 1+: 실제 자동화 모델 추가)
+/// OpenAI 호환 모델 목록.
 pub async fn list_models() -> Json<Value> {
     Json(json!({
         "object": "list",
         "data": [
             {
-                "id": "webchat-mock",
+                "id": "webchat-chatgpt",
                 "object": "model",
                 "created": 1700000000,
                 "owned_by": "codebridge"
             },
             {
-                "id": "webchat-gemini",
+                "id": "webchat-mock",
                 "object": "model",
                 "created": 1700000001,
+                "owned_by": "codebridge"
+            },
+            {
+                "id": "webchat-gemini",
+                "object": "model",
+                "created": 1700000002,
                 "owned_by": "codebridge"
             }
         ]

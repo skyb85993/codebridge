@@ -8,6 +8,10 @@
         "baseURL": "http://127.0.0.1:9224/v1"
       },
       "models": {
+        "webchat-chatgpt": {
+          "name": "ChatGPT (web)",
+          "tool_call": true
+        },
         "webchat-mock": {
           "name": "Web Chat Mock (Phase 0)",
           "tool_call": true
