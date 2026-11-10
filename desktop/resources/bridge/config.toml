@@ -1,0 +1,8 @@
+# CodeBridge Desktop 번들 브릿지 설정 (프로젝트의 config.toml보다 우선)
+# mode: mock (Phase 0~1) / browser (Phase 1+)
+[server]
+host = "127.0.0.1"
+port = 9224
+
+[automation]
+mode = "mock"

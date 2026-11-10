@@ -1,0 +1,61 @@
+{
+  "name": "codebridge-desktop",
+  "version": "0.1.0",
+  "description": "CodeBridge Desktop — 무료 웹 채팅을 모델로 쓰는 독립 코딩 에이전트 앱",
+  "main": "main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "dist:dir": "electron-builder --win --x64 --dir"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "png-to-ico": "^3.0.1"
+  },
+  "build": {
+    "appId": "com.codebridge.desktop",
+    "productName": "CodeBridge",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "renderer/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bridge",
+        "to": "bridge"
+      },
+      {
+        "from": "resources/opencode",
+        "to": "opencode"
+      },
+      {
+        "from": "resources/opencode.json",
+        "to": "opencode.json"
+      },
+      {
+        "from": "resources/tray-icon.png",
+        "to": "tray-icon.png"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "CodeBridge"
+    }
+  },
+  "allowScripts": {
+    "electron@37.10.3": true,
+    "electron-winstaller@5.4.0": true
+  }
+}

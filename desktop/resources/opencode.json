@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "webchat": {
+      "name": "Web Chat (CodeBridge)",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:9224/v1"
+      },
+      "models": {
+        "webchat-mock": {
+          "name": "Web Chat Mock (Phase 0)",
+          "tool_call": true
+        }
+      }
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "shell": "deny",
+    "webfetch": "deny",
+    "execute": "deny"
+  }
+}

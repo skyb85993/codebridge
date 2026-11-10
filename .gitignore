@@ -1,0 +1,15 @@
+/target
+**/target
+/.opencode
+node_modules
+**/node_modules
+.env
+*.log
+/ServerScriptService
+/StarterPlayer
+/desktop/dist
+/desktop/dist/
+/desktop/build/*.ico
+/.chrome-profile/
+/desktop/resources/bridge/*.exe
+/desktop/resources/opencode/*.exe

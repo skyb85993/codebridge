@@ -1,0 +1,43 @@
+# 사이트 프로파일 (Phase 1 automation에서 사용)
+# 각 사이트의 UI 선택자·동작을 코드 밖에서 관리해 사이트 개편에 대응한다.
+# NOTE (2026-11-10 CDP 스파이크 실측): data-* 속성(data-testid=send-button, data-message-author-role 등)이
+# 현행 ChatGPT UI에서 사라졌다. 아래는 한/영 UI 혼용 후보이며, 엔진은 후보를 순차 시도한다.
+
+[profiles.chatgpt]
+name = "ChatGPT"
+url = "https://chatgpt.com/"
+input_candidates = [
+    "#prompt-textarea",
+    "div#prompt-textarea",
+    "textarea[data-id='root']",
+    "div#prompt-textarea [contenteditable='true']",
+    "[contenteditable='true']"
+]
+send_candidates = [
+    "button[aria-label='보내기']",
+    "button[aria-label='Send prompt']",
+    "button[aria-label='Send']",
+    "button[data-testid='send-button']"
+]
+stop_candidates = [
+    "button[aria-label='중지']",
+    "button[data-testid='stop-button']",
+    "button[aria-label='Stop generating']",
+    "button[aria-label='Stop streaming']"
+]
+assistant_candidates = [
+    "div[class*='DilResponseRoot']",
+    "[class*='entity-prose-inset']",
+    "[class*='TextBase']",
+    "[data-message-author-role='assistant']"
+]
+user_candidates = [
+    "[class*='bg-user-message']",
+    "[class*='text-user-message']",
+    "[data-message-author-role='user']"
+]
+message_container = "div[class*='DilResponseRoot']"
+stream_poll_ms = 300
+stable_needed = 4
+timeout_ms = 180000
+limit_texts = ["limit reached", "usage cap", "메시지 한도", "사용 한도"]

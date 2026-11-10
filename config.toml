@@ -1,0 +1,11 @@
+# CodeBridge bridge 기본 설정 (Phase 0)
+# [automation] mode:
+#   "mock"    = 고정 응답 스파이크 (브라우저 없이 전 파이프라인 검증)
+#   "browser" = 실제 웹 채팅 자동화 (Phase 1+ 구현)
+
+[server]
+host = "127.0.0.1"
+port = 9224
+
+[automation]
+mode = "mock"
