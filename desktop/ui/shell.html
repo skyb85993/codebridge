@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:7891 http://127.0.0.1:9224; frame-src http://127.0.0.1:7891;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CodeBridge</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <!-- 커스텀 타이틀바 -->
+  <header id="titlebar">
+    <div class="tb-left">
+      <img class="tb-icon" src="../build/icon.png" alt="" onerror="this.style.display='none'" />
+      <div class="tb-title">
+        <span class="tb-name">CodeBridge</span>
+        <span class="tb-sub" id="tb-sub">로블록스 미니게임 코드 생성기</span>
+      </div>
+      <span id="tb-status-dot" class="status-dot" title="상태 확인 중"></span>
+    </div>
+    <div class="tb-right no-drag">
+      <button id="win-min" class="tb-btn" title="최소화" aria-label="최소화">&#x2013;</button>
+      <button id="win-max" class="tb-btn" title="최대화" aria-label="최대화">&#x25A1;</button>
+      <button id="win-close" class="tb-btn tb-close" title="닫기" aria-label="닫기">&#x2715;</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <!-- 사이드바 -->
+    <aside id="sidebar">
+      <nav>
+        <button class="nav-item active" data-view="work">
+          <span class="nav-icon">&#x1F4AC;</span> 작업
+        </button>
+        <button class="nav-item" data-view="logs">
+          <span class="nav-icon">&#x1F4C4;</span> 로그
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-icon">&#x2699;</span> 설정
+        </button>
+      </nav>
+      <div class="side-spacer"></div>
+      <div class="side-footer">
+        <div class="side-project">
+          <div class="side-label">프로젝트</div>
+          <div class="side-value" id="side-project-path">-</div>
+          <button id="pick-project" class="btn btn-ghost">폴더 변경…</button>
+        </div>
+        <div class="side-updates" id="side-update-state">자동 업데이트</div>
+      </div>
+    </aside>
+
+    <!-- 본문 -->
+    <main id="content">
+      <!-- 작업 뷰 -->
+      <section id="view-work" class="view active">
+        <iframe id="webchat-frame" src="about:blank" title="채팅"></iframe>
+      </section>
+
+      <!-- 로그 뷰 -->
+      <section id="view-logs" class="view">
+        <div class="view-head">
+          <div>
+            <h2>브릿지 / 서버 로그</h2>
+            <p class="muted">CodeBridge 브릿지와 opencode 서버의 최근 출력입니다.</p>
+          </div>
+          <button id="logs-refresh" class="btn btn-secondary">새로고침</button>
+        </div>
+        <pre id="logs-output" class="logs">불러오는 중…</pre>
+      </section>
+
+      <!-- 설정 뷰 -->
+      <section id="view-settings" class="view">
+        <div class="view-head">
+          <div>
+            <h2>설정</h2>
+            <p class="muted">연결 상태와 동작 방식을 확인하고 바꿉니다.</p>
+          </div>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <div class="card-title">브릿지</div>
+            <div class="card-row"><span class="k">상태</span><span id="set-bridge" class="v">확인 중…</span></div>
+            <div class="card-row"><span class="k">포트</span><span class="v">9224</span></div>
+            <div class="card-row"><span class="k">전용 Chrome</span><span id="set-chrome" class="v">확인 중…</span></div>
+            <button id="restart-bridge" class="btn btn-secondary">브릿지 재시작</button>
+          </div>
+          <div class="card">
+            <div class="card-title">계정 상태</div>
+            <div class="card-row"><span class="k">ChatGPT</span><span id="set-chatgpt" class="v">확인 중…</span></div>
+            <div class="card-row"><span class="k">Gemini</span><span id="set-gemini" class="v">확인 중…</span></div>
+            <button id="reopen-chrome" class="btn btn-secondary">전용 Chrome 다시 열기</button>
+          </div>
+          <div class="card">
+            <div class="card-title">업데이트</div>
+            <div class="card-row"><span class="k">현재 버전</span><span id="set-version" class="v">-</span></div>
+            <div class="card-row"><span class="k">상태</span><span id="set-update" class="v">확인 중…</span></div>
+            <button id="check-update" class="btn btn-secondary">업데이트 확인</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 상태바 -->
+  <footer id="statusbar">
+    <span id="sb-bridge" class="sb-item"><span class="status-dot"></span>브릿지</span>
+    <span class="sb-sep">|</span>
+    <span id="sb-chatgpt" class="sb-item">ChatGPT …</span>
+    <span class="sb-sep">|</span>
+    <span id="sb-gemini" class="sb-item">Gemini …</span>
+    <span class="sb-sep">|</span>
+    <span id="sb-messages" class="sb-item">메시지 -</span>
+    <span class="sb-sep">|</span>
+    <span id="sb-update" class="sb-item">v?.?.?</span>
+  </footer>
+
+  <script src="shell.js"></script>
+</body>
+</html>

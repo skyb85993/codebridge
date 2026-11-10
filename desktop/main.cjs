@@ -18,6 +18,7 @@ const {
   shell,
   session,
   nativeImage,
+  ipcMain,
 } = require('electron');
 let autoUpdater = null;
 try {
@@ -39,6 +40,7 @@ const BRIDGE_EXE = path.join(RES, 'bridge', 'codebridge-bridge.exe');
 const BRIDGE_CONFIG = path.join(RES, 'bridge', 'config.toml');
 const OPENCODE_EXE = path.join(RES, 'opencode', 'opencode.exe');
 const OPENCODE_JSON_TEMPLATE = path.join(RES, 'opencode.json');
+const UI_DIR = path.join(__dirname, 'ui');
 const DATA_DIR = app.getPath('userData');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
@@ -332,11 +334,13 @@ function createWindow() {
     minHeight: 700,
     title: 'CodeBridge',
     backgroundColor: '#0d1117',
+    frame: false,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      preload: path.join(UI_DIR, 'preload.cjs'),
     },
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -355,7 +359,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-  mainWindow.loadURL(splash('CodeBridge를 준비하는 중…', '전용 Chrome(ChatGPT)과 브릿지, opencode 서버를 띄우고 있습니다. Chrome 창에서 ChatGPT에 한 번 로그인해 두면 이후에는 앱이 자동으로 띄웁니다.'));
+  mainWindow.loadFile(path.join(UI_DIR, 'shell.html'));
 }
 
 /**
@@ -556,19 +560,133 @@ async function bootUI() {
   if (!mainWindow) createWindow();
   const ok = await waitForOpencode();
   if (!mainWindow) return;
-  if (ok) {
-    injectAuthHeader();
-    mainWindow.loadURL(`http://127.0.0.1:${SERVE_PORT}/`);
-    mainWindow.setTitle('CodeBridge');
-  } else {
-    mainWindow.loadURL(
-      splash(
-        'opencode 서버에 연결하지 못했습니다.',
-        `브릿지/서버 로그를 확인하세요: <code>${LOG_DIR}</code><br>opencode.exe 경로: <code>${OPENCODE_EXE}</code>`,
-      ),
+  injectAuthHeader();
+  // 셸이 app:getStatus로 상태를 읽어 iframe(src)을 채운다
+  mainWindow.webContents.send('app:ready');
+}
+
+// ---------- 셸 IPC 브릿지 ----------
+function httpGetJson(port, pathname, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path: pathname, method: 'GET', timeout: timeoutMs },
+      (res) => {
+        let body = '';
+        res.on('data', (d) => (body += d));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, json: JSON.parse(body) }); }
+          catch { resolve({ status: res.statusCode, json: null, body }); }
+        });
+      },
     );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function readArchiveCounter(projectDir) {
+  try {
+    const p = path.join(app.getPath('appData'), 'CodeBridge', 'bridge-archive', 'state.json');
+    if (!fs.existsSync(p)) return null;
+    const v = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const key = Object.keys(v.projects || {}).find((k) => k === projectDir || k.endsWith(projectDir) || projectDir.endsWith(k));
+    return key ? v.projects[key].message_count ?? 0 : null;
+  } catch {
+    return null;
   }
 }
+
+function tailLogsText() {
+  const files = ['bridge.log', 'opencode.log', 'updater.log'];
+  const chunks = [];
+  for (const name of files) {
+    const p = path.join(LOG_DIR, name);
+    if (!fs.existsSync(p)) continue;
+    try {
+      const st = fs.statSync(p);
+      const len = Math.min(st.size, 64 * 1024);
+      const fd = fs.openSync(p, 'r');
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, st.size - len);
+      fs.closeSync(fd);
+      chunks.push(`===== ${name} =====\n${buf.toString('utf8').trim()}`);
+    } catch (e) {
+      chunks.push(`===== ${name} (읽기 실패) =====`);
+    }
+  }
+  return chunks.join('\n\n').split('\n').slice(-400).join('\n');
+}
+
+ipcMain.on('window:action', (_e, action) => {
+  if (!mainWindow) return;
+  switch (action) {
+    case 'minimize': mainWindow.minimize(); break;
+    case 'toggle-maximize': mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize(); break;
+    case 'close': mainWindow.close(); break;
+  }
+});
+
+ipcMain.handle('app:getStatus', async () => {
+  const enginePort = BRIDGE_PORT;
+  const [health, probe] = await Promise.allSettled([
+    httpGetJson(enginePort, '/health', 2500),
+    httpGetJson(enginePort, '/v1/probe', 4000),
+  ]);
+  const bridgeOk = health.status === 'fulfilled' && health.value.status === 200;
+  const sites = probe.status === 'fulfilled' && probe.value.json?.sites ? probe.value.json.sites : [];
+  const chatgptOk = sites.some((s) => s.site === 'chatgpt' && !s.login_required && s.ok);
+  const geminiOk = sites.some((s) => s.site === 'gemini' && !s.login_required && s.ok);
+  return {
+    bridgeOk,
+    chatgptOk,
+    geminiOk,
+    chromeReady: chromeProc != null,
+    projectDir,
+    appVersion: app.getVersion(),
+    webchatUrl: `http://127.0.0.1:${SERVE_PORT}/`,
+    updateState,
+    updateVersion: app.getVersion(),
+    messageCount: readArchiveCounter(projectDir),
+  };
+});
+
+ipcMain.handle('project:pick', async () => {
+  const picked = await pickProjectFolder();
+  if (!picked) return null;
+  projectDir = picked;
+  writeSettings({ ...readSettings(), projectDir });
+  spawnBridge(projectDir);
+  return picked;
+});
+
+ipcMain.handle('bridge:restart', async () => {
+  if (!projectDir) return false;
+  spawnBridge(projectDir);
+  return true;
+});
+
+ipcMain.handle('chrome:reopen', async () => {
+  killChild(chromeProc);
+  chromeProc = null;
+  spawnChrome();
+  return true;
+});
+
+ipcMain.handle('logs:tail', async () => tailLogsText());
+
+ipcMain.handle('updater:check', async () => {
+  if (!autoUpdater) return { ok: false, message: '업데이터가 초기화되지 않았습니다.' };
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    const latest = result && result.updateInfo ? result.updateInfo.version : '?';
+    if (updateState === 'downloaded') return { ok: true, message: `새 버전(${latest})이 다운로드되었습니다. 재시작 시 설치됩니다.` };
+    if (updateState === 'available') return { ok: true, message: `새 버전(${latest}) 다운로드 중입니다.` };
+    return { ok: true, message: `최신 버전입니다 (v${app.getVersion()}).` };
+  } catch (e) {
+    return { ok: false, message: `업데이트 확인 실패: ${e && e.message ? e.message : e}` };
+  }
+});
 
 process.on('uncaughtException', (e) => {
   try {
