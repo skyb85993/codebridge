@@ -191,6 +191,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - 폴링(~8초) + `page.click(Point)` 기반 전송.
 - 아직 실사용 코딩 E2E 안정화 진행 중 (생성 지연/타임아웃 반복 이슈).
 
+## Phase 3 — Gemini 이중화 + 완전한 앱 릴리즈 인프라 (2026-11-10, 진행 중)
+
+### Gemini 이중화 (완료)
+- `Site::ChatGpt | Site::Gemini` 엔진 이중화 (`automation/engine.rs`). 모델 id에 `gemini` 포함 시 Gemini.
+- 선택자 실측: 전송 버튼 `button[aria-label*='보내']` + **CDP Native Element 클릭**(200자 이상의 합성 클릭 미반응). 완료 감지는 동일(stop 버튼 소멸 + 텍스트 안정).
+- 응답 컨테이너: `message-content` / `structured-content-container.model-response-text`. 코드 블록은 `pre` 안에서 추출 (ChatGPT와 동일).
+- **E2E 통과**: `opencode run -m webchat/webchat-gemini "점프 게임 만들어줘"` → 코드펜스 없이 렌더링된 코드도 DOM 추출 → write tool_calls → 파일 실제 생성 (GameManager.lua, HUD.client.lua).
+- **핸드오버 체인** 구현+실측: [handover] `order = ["same_site_new_chat", "gemini"]` 기본값. 수동 `"지금 인수인계"` 트리거 → 팩 생성 → 새 채팅 → Gemini로 재전송 → 코드 생성 → write 승격 확인.
+
+### 완전한 앱 릴리즈 인프라 (Phase 3)
+- `electron-updater` 내장 (`setupAutoUpdate()`): 시작 시 1회 체크 + 트레이 "업데이트 확인". 코드 서명 없음.
+- `RELEASING.md` — 릴리즈 절차 문서화 (GitHub Releases 기반).
+- x64 per-user NSIS 인스톨러 (`desktop/dist/CodeBridge Setup 0.1.0.exe`).
+- **알려진 결함(수정 완료)**: settings.json이 깨진 경로를 들고 있으면 앱이 기동하지 않고 로그도 남기지 않았다 → `resolveProjectDir()` + spawn `error` 리스너 추가.
+- 첫 설치 파일(`0.1.0`)에는 이 수정이 포함됨.
+
 ## 남은 Phase 0/1 작업
 
 - [x] ~~CDP(chromiumoxide) 브라우저 자동화 스파이크~~ → **2026-11-10 완료** (PING/PING2 전송+응답 추출 검증)
