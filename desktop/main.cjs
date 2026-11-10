@@ -561,6 +561,19 @@ async function bootUI() {
   }
 }
 
+process.on('uncaughtException', (e) => {
+  try {
+    ensureDir(LOG_DIR);
+    fs.appendFileSync(path.join(LOG_DIR, 'boot.log'), `[boot] uncaughtException: ${e && (e.stack || e.message) || e}\n`);
+  } catch {}
+});
+process.on('unhandledRejection', (e) => {
+  try {
+    ensureDir(LOG_DIR);
+    fs.appendFileSync(path.join(LOG_DIR, 'boot.log'), `[boot] unhandledRejection: ${e && (e.stack || e.message) || e}\n`);
+  } catch {}
+});
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -575,15 +588,25 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    projectDir = '';
-    ensureDir(DATA_DIR);
-    ensureDir(LOG_DIR);
-    createWindow();
-    buildTray();
-    setupAutoUpdate();
-    const started = await startServices();
-    if (started) {
-      bootUI();
+    try {
+      appendLog('boot', '[boot] whenReady: start\n');
+      projectDir = '';
+      ensureDir(DATA_DIR);
+      ensureDir(LOG_DIR);
+      appendLog('boot', '[boot] dirs ensured\n');
+      createWindow();
+      appendLog('boot', '[boot] window created\n');
+      buildTray();
+      appendLog('boot', '[boot] tray built\n');
+      setupAutoUpdate();
+      appendLog('boot', '[boot] auto-update setup done\n');
+      const started = await startServices();
+      appendLog('boot', `[boot] services started=${started}\n`);
+      if (started) {
+        bootUI();
+      }
+    } catch (e) {
+      appendLog('boot', `[boot] whenReady error: ${e && (e.stack || e.message) || e}\n`);
     }
   });
 
