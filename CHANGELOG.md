@@ -11,6 +11,12 @@
 - 인앱 자동 업데이트 (`electron-updater`, GitHub Releases 기준)
 - 설정.json 폴더 선택 + 단일 인스턴스 잠금
 
+## v0.2.1 (미릴리스)
+
+- `webchat-chatgpt` (ChatGPT (web)) 모델 등록 — opencode.json 2곳 + `/v1/models`에 추가 (`gpt-` 금지 규칙 준수)
+- iframe 임베드 실사용 E2E 검증 완료: 새 세션 → ChatGPT (web) → 로블록스 Lua 파일이 실제로 작성됨 (스크래치 폴더)
+- 발견: webchat 모델이 "모델 관리"에서 기본 OFF → 첫 실행 시 표시되지 않음 (활성화 방법 문서화)
+
 ## v0.2.0 (2026-11-11)
 
 커스텀 UI 셸 릴리스.

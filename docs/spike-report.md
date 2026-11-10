@@ -223,6 +223,21 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
   - 패키지드 앱에서 `/releases/latest` → 302 → JSON(tag_name v0.1.0) 확인, 업데이터가 `Update for version 0.1.0 is not available`까지 도달함을 디버그 패치로 확인 후 원복.
   - (참고) 릴리스 재생성 직후에 앱을 띄우면 GitHub CDN 전파 전이라 "No published versions on GitHub"가 잠깐 날 수 있음 — 실제 원인 없음.
 
+## iframe 채팅 실사용 검증 (2026-11-11, v0.2.0 기반)
+
+임베드된 opencode SPA에서 실제 코딩 작업을 처음부터 끝까지 수행해 E2E로 확인했다.
+
+- **검증 절차**: 앱을 `--remote-debugging-port`로 띄우고 CDP(Node, `9222`→고스트 엔트리로 바인드 실패 → `9334`로 재기동)로 셸+iframe(OOPIF, `type:iframe` 타겟)을 조작.
+- **성공 시나리오**: iframe → 새 세션 → 모델 `ChatGPT (web)` 선택 → "로블록스 점프 부스트 패드 Lua 만들어줘" → 브릿지 → (전용 Chrome, CDP 9333) → ChatGPT 응답 → 관대 파서가 fence를 write로 승격 → opencode가 쓰기 실행 → **`D:\cb-test-scratch\Workspace\JumpBoostPad\Script` (1,302자, 한국어 주석 정상)** 생성. UI에 "1 작성 사용됨" 표시, 상태바 메시지 카운트 증가, 세션 자연 종료 확인.
+- **검증 중 발견한 iframe-임베드 특유의 사항** (첫 실행 시 사용자에게 그대로 노출됨):
+  1. SPA는 프로젝트가 없으면 "＋ 새 세션"이 동작하지 않음 → **"프로젝트 추가" → 앱 내 폴더 브라우저**(`~`/`루트`/경로 입력)로 `D:\cb-test-scratch`를 등록하면 해결. SPA는 `localStorage opencode.global.dat:server`의 `projects.local` 목록을 읽는다. (데스크톱 preload가 하던 등록을 iframe 임베드에서는 사용자가 직접 해야 함)
+  2. 우리 `webchat-*` 모델 3종은 **기본 비활성화** 상태로만 표시됨 → "모델 관리"(모델 선택기 하단)에서 스위치를 켜야 피커에 나타남. 저장 위치: `opencode.global.dat:model` (`{"user":[{"providerID":"webchat","modelID":"webchat-chatgpt","visibility":"show"},...]}`). **첫 실행 시 자동으로 켜는 시드(프리로드/부트스트랩)가 필요** — 다음 릴리스 후보.
+  3. 서버 선택은 `location.origin`으로 자동 등록되며, 인증은 셸이 `webRequest`로 `Authorization: Basic ...`를 iframe 요청에 주입해 통과시키는 방식 → 그대로 동작 확인.
+  4. 모델 피커는 419개 모델을 내보내며(`/api/model` — 우리 모델 3종 `status=active`), 검색/선택/최근 사용 저장까지 정상.
+  5. CDP 9222 포트가 죽은 인스턴스 pid를 붙들고 있는 것처럼 보이며(고스트) 새 인스턴스의 바인드를 막음 → 새 포트로 우회. (netstat 버그성 동작)
+  6. 설치본 브릿지 교체는 Program Files 권한이 필요 (다음 릴리스에 포함).
+- **추가된 모델**: `webchat-chatgpt` (ChatGPT (web)) — opencode.json 2곳 + `/v1/models`. 엔진은 id에 "gemini" 미포함이면 ChatGPT로 분기.
+
 ## 남은 Phase 0/1 작업
 
 - [x] ~~CDP(chromiumoxide) 브라우저 자동화 스파이크~~ → **2026-11-10 완료** (PING/PING2 전송+응답 추출 검증)
