@@ -54,6 +54,17 @@
     <main id="content">
       <!-- 작업 뷰 -->
       <section id="view-work" class="view active">
+        <div id="work-overlay" class="work-overlay hidden" role="alert">
+          <div class="work-overlay-card">
+            <div class="work-overlay-icon">!</div>
+            <h3>opencode 서버에 연결하지 못했습니다</h3>
+            <p class="muted">브릿지/opencode 서버가 준비되지 않았거나 인증에 실패했습니다.<br />로그 탭에서 자세한 내용을 확인하세요.</p>
+            <div class="work-overlay-actions">
+              <button id="work-retry" class="btn btn-secondary">새로고침</button>
+              <button id="work-logs" class="btn btn-secondary">로그 보기</button>
+            </div>
+          </div>
+        </div>
         <iframe id="webchat-frame" src="about:blank" title="채팅"></iframe>
       </section>
 

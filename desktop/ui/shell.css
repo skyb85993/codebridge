@@ -132,7 +132,27 @@ button { font-family: inherit; cursor: pointer; }
 .view { position: absolute; inset: 0; display: none; }
 .view.active { display: flex; flex-direction: column; }
 
-#view-work { background: var(--bg); }
+#view-work { background: var(--bg); position: relative; }
+.work-overlay {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(13, 17, 23, 0.88); backdrop-filter: blur(3px);
+}
+.work-overlay.hidden { display: none; }
+.work-overlay-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 26px 30px; max-width: 460px; text-align: center;
+  display: flex; flex-direction: column; gap: 10px; align-items: center;
+}
+.work-overlay-icon {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(248, 81, 73, 0.14); color: var(--danger);
+  display: grid; place-items: center; font-size: 22px; font-weight: 700;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+.work-overlay-card h3 { font-size: 15px; }
+.work-overlay-actions { display: flex; gap: 10px; margin-top: 6px; }
 #webchat-frame {
   flex: 1; border: 0; width: 100%; height: 100%; background: var(--bg);
 }

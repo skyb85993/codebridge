@@ -22,6 +22,30 @@ $('#win-min').addEventListener('click', () => bridge.windowAction('minimize'));
 $('#win-max').addEventListener('click', () => bridge.windowAction('toggle-maximize'));
 $('#win-close').addEventListener('click', () => bridge.windowAction('close'));
 
+// ---------- 작업 뷰 iframe 게이팅 ----------
+// opencode 서버(7891)가 실제로 응답할 때만 iframe에 src를 넣는다.
+// startupFailed면 오버레이를 보여주고 새로고침 경로를 제공한다.
+let iframeLoaded = false;
+const overlay = () => $('#work-overlay');
+const showOverlay = () => overlay().classList.remove('hidden');
+const hideOverlay = () => overlay().classList.add('hidden');
+function loadChatFrame(url) {
+  const frame = $('#webchat-frame');
+  if (frame.getAttribute('src') !== url) {
+    frame.setAttribute('src', url);
+    iframeLoaded = true;
+  }
+  hideOverlay();
+}
+
+$('#work-retry').addEventListener('click', () => {
+  window.location.reload(); // 셸 전체 재로딩 → pollStatus가 다시 상태를 판정
+});
+$('#work-logs').addEventListener('click', () => {
+  const logsNav = document.querySelector('.nav-item[data-view="logs"]');
+  if (logsNav) logsNav.click();
+});
+
 // ---------- 상태 폴링 ----------
 const dot = () => $('#tb-status-dot');
 const statusBridge = () => $('#sb-bridge');
@@ -55,9 +79,11 @@ async function pollStatus() {
       : s.updateState === 'downloaded' ? '업데이트 준비됨 — 재시작 시 설치'
       : '자동 업데이트 ON';
 
-    const frame = $('#webchat-frame');
-    if (frame.getAttribute('src') !== s.webchatUrl) {
-      frame.setAttribute('src', s.webchatUrl);
+    // iframe은 opencode 서버가 실제로 200을 줄 때까지 로드하지 않는다
+    if (s.opencodeOk && s.webchatUrl) {
+      loadChatFrame(s.webchatUrl);
+    } else if (s.startupFailed && !iframeLoaded) {
+      showOverlay();
     }
   } catch (e) {
     dot().className = 'status-dot err';

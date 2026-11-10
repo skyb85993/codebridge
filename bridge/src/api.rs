@@ -90,10 +90,13 @@ pub async fn chat_completions(
     State(app): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
-    if app.cfg.automation.mode == "browser" {
+    // 모델 기반 라우팅: mock 모델은 mock 경로로 강제한다 (패키지 설정이 browser여도
+    // 실제 web 사이트로 트래픽을 보내지 않는다).
+    let is_mock_model = req.model.to_lowercase().contains("mock");
+    if app.cfg.automation.mode == "browser" && !is_mock_model {
         return browser_completions(&app, &req).await;
     }
-    if app.cfg.automation.mode != "mock" {
+    if app.cfg.automation.mode != "mock" && !is_mock_model {
         return (
             StatusCode::NOT_IMPLEMENTED,
             "usage: [automation] mode = \"mock\" | \"browser\"",
@@ -269,12 +272,60 @@ pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// 현재 tool 턴의 결과에서 실패 징후를 찾는다. opencode tool 결과는 JSON이거나 일반 텍스트.
+fn tool_text_looks_failed(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "\"success\": false",
+        "\"ok\": false",
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "permission denied",
+        "denied",
+        "not allowed",
+        "거부",
+        "실패",
+        "오류",
+    ]
+    .iter()
+    .any(|t| lower.contains(t))
+}
+
+fn tool_turn_summary(tool_txt: &str) -> (String, bool) {
+    if tool_txt.trim().is_empty() {
+        return (
+            "도구가 실행되었습니다. 이어서 진행할 내용이 있으면 말씀해 주세요.".to_string(),
+            true,
+        );
+    }
+    if tool_text_looks_failed(tool_txt) {
+        return (String::new(), false);
+    }
+    (
+        "파일 작업이 완료되었습니다. 추가로 수정하거나 이어서 작업할 내용이 있으면 말씀해 주세요."
+            .to_string(),
+        true,
+    )
+}
+
 fn msg_tool_text(m: &ChatMessage) -> String {
-    m.content
-        .as_ref()
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string()
+    match m.content.as_ref() {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| {
+                p.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+                    .or_else(|| p.as_str().map(str::to_string))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(v) => v.to_string(),
+        None => String::new(),
+    }
 }
 
 /// 도구 실행 결과를 받은 턴: 같은 내용을 또 생성하지 않도록 웹사이트를 재호출하지 않고
@@ -307,23 +358,40 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     let workspace =
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let workspace_s = workspace.to_string_lossy().to_string();
+    let archive_enabled = app.cfg.handover.archive;
     let arc = archive::Archive::new(&workspace_s);
-    arc.record("USER", &user_text(req));
+    if archive_enabled {
+        arc.record("USER", &user_text(req));
+    }
     let n = arc.bump_counter();
 
-    // 도구 결과를 받은 턴: 웹사이트를 재호출하지 않고 마무리
-    if req.messages.iter().any(|m| m.role == "tool") {
-        let content = "파일 작업이 완료되었습니다. 추가로 수정하거나 이어서 작업할 내용이 있으면 말씀해 주세요.";
-        arc.record("ASSISTANT", content);
-        return ack_response(app, req, content);
+    // 도구 실행 결과를 막 받은 턴(마지막 메시지가 tool): 웹사이트를 재호출하지 않고 마무리.
+    // 이력 중 tool이 섞여 있어도 "현재 턴이 tool 턴"인지만 판정한다.
+    if let Some(last) = req.messages.last() {
+        if last.role == "tool" {
+            let tool_txt = msg_tool_text(last);
+            let (content, ok) = tool_turn_summary(&tool_txt);
+            let content = if ok {
+                content
+            } else {
+                let preview: String = tool_txt.chars().take(240).collect();
+                format!(
+                    "도구 실행이 실패한 것 같습니다: {preview}\n원인을 확인하고 다시 시도해 주세요."
+                )
+            };
+            if archive_enabled {
+                arc.record("ASSISTANT", &content);
+            }
+            return ack_response(app, req, &content);
+        }
     }
 
-    let prompt = harness::flatten::build(req, &workspace, None);
-    // DEBUG: 실제 전송되는 프롬프트를 파일로 덤프 (패브를 위한 임시 로그)
-    let _ = std::fs::write(
-        std::path::PathBuf::from(std::env::temp_dir()).join("codebridge_flatten_debug.txt"),
-        &prompt,
-    );
+    let prompt = match harness::flatten::build(req, &workspace, None) {
+        Ok(p) => p,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    };
     println!(
         "[browser] cwd={} prompt_chars={} msg_count={}",
         workspace_s,
@@ -347,21 +415,25 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             ),
             limit_hit: false,
             code_blocks: Vec::new(),
+            truncated: false,
         },
     };
     let mut raw = outcome.text;
     let mut blocks = outcome.code_blocks;
+    let mut truncated = outcome.truncated;
     let mut active_site = site;
 
-    // 응답이 잘렸으면(raw 기준) 한 번만 "이어서 계속"을 요청한다 (Phase 2, 쿼터 제한)
-    if harness::flatten::has_unterminated_fence(&raw) {
-        println!("[browser] unterminated fence detected; sending continuation");
+    // 잘린 응답이면 "이어서 계속"을 1회 요청 (Phase 2, 쿼터 제한).
+    // DOM 블록이든 raw든 truncated면 파일 승격은 하지 않는다.
+    if truncated || harness::flatten::has_unterminated_fence(&raw) {
+        println!("[browser] truncated/unterminated response; sending continuation (truncated={truncated})");
         let cont_prompt = "이어서 계속 써 주세요. 파일을 나누어 출력해도 됩니다.";
         match engine.send_and_await_site(cont_prompt, active_site).await {
             Ok(o2) => {
                 raw.push_str("\n\n(이어서 계속 받은 내용)\n\n");
                 raw.push_str(&o2.text);
                 blocks.extend(o2.code_blocks);
+                truncated = o2.truncated;
             }
             Err(e) => {
                 raw.push_str(&format!("\n\n(이어서 계속 요청 실패: {e})"));
@@ -369,8 +441,16 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     }
 
-    // 한도 배너 감지 또는 사용자 수동 트리거("지금 인수인계") → 인수인계 팩 → 체인 순서로 재전송
-    let manual_handover = user_text(req).contains("지금 인수인계");
+    let latest_user = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(msg_tool_text)
+        .unwrap_or_default();
+
+    // 한도 배너 감지 또는 사용자 수동 트리거(현재 사용자 메시지에만) → 인수인계 팩 → 체인 순서로 재전송
+    let manual_handover = latest_user.contains("지금 인수인계");
     if outcome.limit_hit || manual_handover {
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
@@ -386,10 +466,16 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             &tool_summary,
             &snap,
         );
-        arc.record("HANDOVER", &pack);
+        if archive_enabled {
+            arc.record("HANDOVER", &pack);
+        }
         let fname = format!("handover-{id}.md");
-        let saved = arc.write_artifact(&fname, &pack);
-        println!("[browser] handover pack saved to {saved:?} (site={active_site:?})");
+        if archive_enabled {
+            let saved = arc.write_artifact(&fname, &pack);
+            println!("[browser] handover pack saved to {saved:?} (site={active_site:?})");
+        } else {
+            println!("[browser] handover pack built in memory (archive off) (site={active_site:?})");
+        }
 
         if app.cfg.handover.mode == "auto" {
             let order = &app.cfg.handover.order;
@@ -412,6 +498,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                         }
                                         raw = o2.text;
                                         blocks = o2.code_blocks;
+                                        truncated = o2.truncated;
                                         chain_done = true;
                                         break;
                                     }
@@ -436,8 +523,14 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                     format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
                                 match engine.send_and_await_site(&retry, active_site).await {
                                     Ok(o2) => {
+                                        if o2.limit_hit {
+                                            last_err = "Gemini 재전송에서도 한도 배너 — 체인 중단".into();
+                                            // 체인 종료: Gemini가 마지막 단계이므로 폴백 없음
+                                            break;
+                                        }
                                         raw = o2.text;
                                         blocks = o2.code_blocks;
+                                        truncated = o2.truncated;
                                         chain_done = true;
                                         break;
                                     }
@@ -464,9 +557,10 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     }
 
-    if harness::flatten::has_unterminated_fence(&raw) {
+    if truncated {
+        // 부분 응답: 불완전한 코드가 파일로 승격되지 않도록 명시 (사용자에게 이어가라고 안내)
         raw.push_str(
-            "\n\n(참고: 응답이 잘렸을 수 있습니다 — 마지막 코드펜스가 닫히지 않았습니다. \"이어서 계속\"이라고 보내면 이어집니다.)",
+            "\n\n(참고: 응답이 도중에 끊겼습니다. 파일 쓰기는 건너뛰었습니다 — \"이어서 계속\"이라고 보내면 이어집니다.)",
         );
     }
     if n >= app.cfg.handover.thread_soft_limit {
@@ -475,10 +569,13 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         ));
     }
 
-    arc.record("ASSISTANT", &raw);
+    if archive_enabled {
+        arc.record("ASSISTANT", &raw);
+    }
 
     // 코드 블록이 DOM에서 추출되면 그것을 관대 파서에 넣는다 (raw는 렌더된 텍스트라 ```가 없음).
     // 추출 실패 시 raw 자체를 파싱하는 폴백을 유지한다.
+    // 잘린 응답은 불완전한 코드일 수 있으므로 파일 승격을 하지 않는다.
     let parse_src = if blocks.is_empty() {
         raw.clone()
     } else {
@@ -488,7 +585,11 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let files = translate::lenient::parse(&parse_src);
+    let files = if truncated {
+        Vec::new()
+    } else {
+        translate::lenient::parse(&parse_src)
+    };
     let (calls, issues) = translate::lenient::to_tool_calls(&files);
     let mut text = raw.clone();
     if !issues.is_empty() {

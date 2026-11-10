@@ -70,6 +70,7 @@ let appQuitting = false;
 let probeTimer = null;
 let loginRequired = false;
 let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
+let startupFailed = false; // waitForOpencode 실패 여부 (셸의 iframe 게이팅에 사용)
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -404,6 +405,26 @@ function killChild(proc) {
   }
 }
 
+/** killChild 이후 실제 종료를 기다린다 (최대 5초). */
+async function stopChildAndWait(proc) {
+  if (!proc || proc.killed) return;
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    proc.once('exit', done);
+    killChild(proc);
+    setTimeout(done, 5000);
+  });
+}
+
+/** Chrome을 내리고, 종료를 기다린 뒤 같은 프로필로 다시 띄우고 CDP가 응답할 때까지 기다린다. */
+async function reopenChromeAndWait() {
+  const old = chromeProc;
+  chromeProc = null;
+  await stopChildAndWait(old);
+  spawnChrome();
+  return waitForChrome(15000);
+}
+
 function setupAutoUpdate() {
   if (!autoUpdater) {
     appendLog('updater', '[updater] electron-updater unavailable; skipping\n');
@@ -502,9 +523,7 @@ function buildTray() {
     {
       label: '전용 Chrome 재시작',
       click: () => {
-        killChild(chromeProc);
-        chromeProc = null;
-        spawnChrome();
+        reopenChromeAndWait();
       },
     },
     {
@@ -559,6 +578,7 @@ function buildTray() {
 async function bootUI() {
   if (!mainWindow) createWindow();
   const ok = await waitForOpencode();
+  startupFailed = !ok;
   if (!mainWindow) return;
   injectAuthHeader();
   // 셸이 app:getStatus로 상태를 읽어 iframe(src)을 채운다
@@ -629,16 +649,20 @@ ipcMain.on('window:action', (_e, action) => {
 
 ipcMain.handle('app:getStatus', async () => {
   const enginePort = BRIDGE_PORT;
-  const [health, probe] = await Promise.allSettled([
+  const [health, probe, opencodeRoot] = await Promise.allSettled([
     httpGetJson(enginePort, '/health', 2500),
     httpGetJson(enginePort, '/v1/probe', 4000),
+    httpGetRaw(SERVE_PORT, '/', 2500),
   ]);
   const bridgeOk = health.status === 'fulfilled' && health.value.status === 200;
+  const opencodeOk = opencodeRoot.status === 'fulfilled' && opencodeRoot.value.status === 200;
   const sites = probe.status === 'fulfilled' && probe.value.json?.sites ? probe.value.json.sites : [];
   const chatgptOk = sites.some((s) => s.site === 'chatgpt' && !s.login_required && s.ok);
   const geminiOk = sites.some((s) => s.site === 'gemini' && !s.login_required && s.ok);
   return {
     bridgeOk,
+    opencodeOk,
+    startupFailed,
     chatgptOk,
     geminiOk,
     chromeReady: chromeProc != null,
@@ -667,10 +691,17 @@ ipcMain.handle('bridge:restart', async () => {
 });
 
 ipcMain.handle('chrome:reopen', async () => {
-  killChild(chromeProc);
-  chromeProc = null;
-  spawnChrome();
+  await reopenChromeAndWait();
   return true;
+});
+
+ipcMain.on('spa:bootstrapSync', (e) => {
+  // spa-seed.cjs(프리로드)가 document-start에 SPA 첫 실행 설정을 시드하는 데 사용
+  e.returnValue = { projectDir: projectDir || '' };
+});
+
+ipcMain.handle('spa:bootstrap', () => {
+  return { projectDir: projectDir || '', appVersion: app.getVersion() };
 });
 
 ipcMain.handle('logs:tail', async () => tailLogsText());
@@ -720,6 +751,13 @@ if (!gotLock) {
       projectDir = '';
       ensureDir(DATA_DIR);
       ensureDir(LOG_DIR);
+      // iframe에 심어줄 SPA 시드 프리로드 (127.0.0.1:7891 origin에서만 동작)
+      try {
+        session.defaultSession.setPreloads([path.join(UI_DIR, 'spa-seed.cjs')]);
+        appendLog('boot', '[boot] spa-seed preload registered\n');
+      } catch (e) {
+        appendLog('boot', `[boot] spa-seed preload failed: ${e && e.message || e}\n`);
+      }
       appendLog('boot', '[boot] dirs ensured\n');
       createWindow();
       appendLog('boot', '[boot] window created\n');

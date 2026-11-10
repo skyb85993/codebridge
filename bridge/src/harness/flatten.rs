@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::api::{ChatMessage, ChatRequest};
+use serde_json::Value;
 
 const FENCE_HEADER: &str = include_str!("../../../prompts/fence_convention.md");
 const DEFAULT_BUDGET_CHARS: usize = 12_000;
@@ -65,18 +66,33 @@ fn human_size(n: u64) -> String {
     }
 }
 
+/// OpenAI 호환 content를 문자열로 정규화한다.
+/// content는 문자열 또는 content parts 배열({"type":"text","text":"..."} 등)일 수 있다.
 fn msg_text(m: &ChatMessage) -> String {
-    m.content
-        .as_ref()
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string()
+    match m.content.as_ref() {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| {
+                // {"type":"text","text":"..."} 우선, 문자열 part 자체도 허용
+                p.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_string)
+                    .or_else(|| p.as_str().map(str::to_string))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
-/// messages → 단일 프롬프트. budget_chars 를 위해 가장 오래된 도구 결과부터 자른다.
-pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usize>) -> String {
+/// messages → 단일 프롬프트.
+/// 우선순위: 규약 > 최근 user > 도구 결과 > 스냅샷 — 현재 요청은 절대 자르지 않는다.
+/// 규약+현재 요청 자체가 예산을 넘으면 Err로 명시적으로 거부한다.
+pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usize>) -> Result<String, String> {
     let budget = budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS);
-    let snapshot = snapshot(workspace_root);
+    let header = format!("[파일 규약 헤더]\n{}", FENCE_HEADER.trim());
+    let answer = "[답변 요청]\n위 규약에 따라 답변해 주세요.";
     let latest_user = req
         .messages
         .iter()
@@ -84,23 +100,29 @@ pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usiz
         .find(|m| m.role == "user")
         .map(msg_text)
         .unwrap_or_default();
+    let user_sec = format!("[이번 사용자 요청]\n{latest_user}");
+
+    let fixed_len = header.chars().count() + user_sec.chars().count() + answer.chars().count() + 8;
+    if fixed_len > budget {
+        return Err(format!(
+            "사용자 요청이 너무 깁니다 ({fixed_len}자 > 예산 {budget}자). 요청을 나누어 보내 주세요."
+        ));
+    }
+
+    let remaining = budget - fixed_len;
+
+    // 도구 결과를 오래된 것부터 남은 예산에 맞게 접기
     let tool_results: Vec<String> = req
         .messages
         .iter()
         .filter(|m| m.role == "tool")
         .map(msg_text)
         .collect();
-
-    let mut sections: Vec<String> = Vec::new();
-    sections.push("[파일 규약 헤더]\n".to_string() + FENCE_HEADER.trim());
-    sections.push(format!("[이번 사용자 요청]\n{latest_user}"));
-
-    // 도구 결과를 오래된 것부터 예산에 맞게 접기
     let mut kept: Vec<String> = Vec::new();
-    let mut used = sections.iter().map(|s| s.len()).sum::<usize>() + snapshot.len();
+    let mut used = 0usize;
     for (i, tr) in tool_results.iter().enumerate().rev() {
-        let cost = tr.len() + 24;
-        if used + cost > budget {
+        let cost = tr.chars().count() + 24;
+        if used + cost > remaining {
             kept.push(format!("(…오래된 도구 결과 {}건은 예산 초과로 생략)", i + 1));
             break;
         }
@@ -108,19 +130,45 @@ pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usiz
         kept.push(format!("[도구 결과 #{}]\n{}", i + 1, tr));
     }
     kept.reverse();
+
+    // 스냅샷: 남은 공간에 맞게 행 단위로 자른다 (잘랐으면 표시)
+    let snap_full = snapshot(workspace_root);
+    let snap_room = remaining.saturating_sub(used);
+    let snapshot = truncate_snapshot(&snap_full, snap_room);
+
+    let mut sections: Vec<String> = Vec::new();
+    sections.push(header);
+    sections.push(user_sec);
     if !kept.is_empty() {
         sections.push(kept.join("\n\n"));
     }
-
     if !snapshot.trim().is_empty() {
         sections.push(format!("[현재 워크스페이스 파일]\n{snapshot}"));
     }
-    sections.push("[답변 요청]\n위 규약에 따라 답변해 주세요.".to_string());
+    sections.push(answer.to_string());
 
-    let mut out = sections.join("\n\n");
-    // 최종 안전 절단 (문자 경계)
-    if out.chars().count() > budget {
-        out = out.chars().take(budget).collect();
+    Ok(sections.join("\n\n"))
+}
+
+fn truncate_snapshot(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for line in s.lines() {
+        let cost = line.chars().count() + 1;
+        if used + cost > max_chars {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+        used += cost;
+    }
+    if out.is_empty() {
+        out.push_str("(…워크스페이스 스냅샷은 예산 초과로 생략)\n");
+    } else {
+        out.push_str("(…스냅샷이 예산에 맞게 일부만 포함됨)\n");
     }
     out
 }
@@ -170,7 +218,7 @@ mod tests {
         let out_dir = dir.join("src");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
-        let prompt = build(&req, &dir, Some(20_000));
+        let prompt = build(&req, &dir, Some(20_000)).unwrap();
         assert!(prompt.contains("중요한 작업"));
         assert!(prompt.contains("파일 출력 규약"));
         assert!(prompt.contains("main.rs"));
@@ -178,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn budget_respected() {
+    fn oversized_request_rejected_explicitly() {
         let big = "가".repeat(5000);
         let msgs = vec![ChatMessage {
             role: "user".into(),
@@ -190,8 +238,31 @@ mod tests {
             stream: false,
             tools: None,
         };
-        let prompt = build(&req, std::path::Path::new("."), Some(200));
-        assert!(prompt.chars().count() <= 200);
+        let result = build(&req, std::path::Path::new("."), Some(200));
+        assert!(result.is_err(), "oversized request must be rejected explicitly");
+        let err = result.unwrap_err();
+        assert!(err.contains("요청이 너무 깁니다"));
+    }
+
+    #[test]
+    fn content_array_text_parts_extracted() {
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: Some(serde_json::json!([
+                { "type": "text", "text": "첫 줄" },
+                { "type": "image_url", "image_url": { "url": "https://example.invalid/x.png" } },
+                { "type": "text", "text": "둘째 줄" }
+            ])),
+        }];
+        let req = ChatRequest {
+            model: "mock".into(),
+            messages: msgs,
+            stream: false,
+            tools: None,
+        };
+        let prompt = build(&req, std::path::Path::new("."), Some(20_000)).unwrap();
+        assert!(prompt.contains("첫 줄"));
+        assert!(prompt.contains("둘째 줄"));
     }
 }
 

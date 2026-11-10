@@ -96,12 +96,35 @@ impl std::fmt::Display for EngineError {
     }
 }
 
+use std::sync::OnceLock;
+use tokio::sync::{Mutex, MutexGuard};
+
+/// 사이트 브라우저 작업 직렬화: 동시에 두 요청이 같은 탭의 컴포저를 건드리지 않도록
+/// send/rotate/probe 전체에 거는 프로세스 전역 잠금.
+static SITE_OP: OnceLock<Mutex<()>> = OnceLock::new();
+async fn site_op_lock() -> MutexGuard<'static, ()> {
+    SITE_OP.get_or_init(|| Mutex::new(())).lock().await
+}
+
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.trim().split_once("://")?.1;
+    let hostport = rest.split(['/', '?', '#']).next()?;
+    let host = hostport.rsplit('@').next()?.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_lowercase())
+    }
+}
+
 #[derive(Debug)]
 pub struct SendOutcome {
     pub text: String,
     pub limit_hit: bool,
     /// 마지막 assistant 응답의 코드 블록들 (pre.innerText, DOM 순서)
     pub code_blocks: Vec<String>,
+    /// 마감 시간까지 세대 완료를 확인하지 못하고 끝난 부분 응답이면 true
+    pub truncated: bool,
 }
 
 pub struct CompletedPage {
@@ -146,7 +169,6 @@ impl Engine {
     }
 
     async fn find_tab(&self, browser: &Browser, site: Site) -> Result<Page, EngineError> {
-        let host = site_selectors(site).host;
         // handler가 대상 목록을 받을 때까지 재시도
         let mut pages = browser.pages().await.unwrap_or_default();
         for _ in 0..12 {
@@ -157,9 +179,13 @@ impl Engine {
             pages = browser.pages().await.unwrap_or_default();
         }
         let mut fallback = None;
+        let want_host = site_selectors(site).host.to_lowercase();
         for p in pages {
             let u = p.url().await.ok().flatten().unwrap_or_default();
-            if u.contains(host) {
+            // 정확한 origin(host) 검증: https + 정확히 일치하는 호스트만 신뢰 (example.com/chatgpt.com/c/x 같은 피싱 방지)
+            let ok = u.starts_with("https://")
+                && host_of(&u).map(|h| h == want_host).unwrap_or(false);
+            if ok {
                 // 대화/앱 URL 우선 (gemini.google.com/app/..., chatgpt.com/c/...)
                 if site == Site::Gemini && u.contains("/app") {
                     return Ok(p);
@@ -291,18 +317,34 @@ impl Engine {
         Ok(())
     }
 
-    /// 페이지 텍스트에 한도 배너가 보이면 true (F2.16 확정 감지)
+    /// 한도 배너 감지 (F2.16 확정 감지).
+    /// 대화 본문 전체가 아니라 배너성 요소(role=alert/dialog, 클래스에 banner/toast/limit 등)만
+    /// 검사한다 — "rate limit" 같은 단어가 대화에 등장해도 한도로 오판하지 않도록.
     pub async fn is_limit_banner(&self, page: &Page) -> bool {
-        let js = r#"(document.body ? document.body.innerText : '')"#;
+        let js = r#"(() => {
+            const sel = [
+                '[role="alert"]', '[role="dialog"]', '[aria-modal="true"]',
+                '[class*="banner" i]', '[class*="toast" i]', '[class*="notice" i]',
+                '[class*="limit" i]', '[class*="modal" i]', '[class*="warning" i]',
+                '[class*="overlay" i]'
+            ].join(',');
+            const els = [...document.querySelectorAll(sel)];
+            if (els.length === 0) return '';
+            return els.map(e => (e.innerText || '')).join('\n').slice(0, 4000);
+        })()"#;
         let Ok(text) = eval_str(page, js).await else {
             return false;
         };
+        if text.is_empty() {
+            return false;
+        }
         let lower = text.to_lowercase();
         LIMIT_TEXTS.iter().any(|t| lower.contains(t))
     }
 
     /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용)
     pub async fn probe_site(&self, site: Site) -> Result<(bool, String, String), EngineError> {
+        // probe는 읽기 전용이므로 전송 작업 잠금을 잡지 않는다 (생성 중 UI 폴링 지연 방지).
         let sel = site_selectors(site).composer_sel;
         let browser = self.spawn_handler().await?;
         let page = self.find_tab(&browser, site).await?;
@@ -330,6 +372,7 @@ impl Engine {
 
     /// "새 채팅" 버튼을 클릭해 새 스레드를 만든다 (F2.18/19)
     pub async fn rotate_new_chat_site(&self, site: Site) -> Result<(), EngineError> {
+        let _op_guard = site_op_lock().await;
         let sel = site_selectors(site);
         let browser = self.spawn_handler().await?;
         let page = self.find_tab(&browser, site).await?;
@@ -350,7 +393,11 @@ impl Engine {
             return Err(EngineError::Page("새 채팅 버튼을 찾지 못했습니다".into()));
         }
         tokio::time::sleep(Duration::from_millis(1200)).await;
-        let _ = self.wait_for_composer(&page, site, 20_000).await?;
+        if !self.wait_for_composer(&page, site, 20_000).await? {
+            return Err(EngineError::Page(
+                "새 채팅 후 입력창이 준비되지 않았습니다 (20초 초과)".into(),
+            ));
+        }
         drop(browser);
         Ok(())
     }
@@ -361,7 +408,9 @@ impl Engine {
     }
 
     /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.
+    /// 프로세스 전역 잠금으로 같은 탭에 대한 동시 작업을 직렬화한다.
     pub async fn send_and_await_site(&self, prompt: &str, site: Site) -> Result<SendOutcome, EngineError> {
+        let _op_guard = site_op_lock().await;
         let sel = site_selectors(site);
         let browser = self.spawn_handler().await?;
         let page = self.find_tab(&browser, site).await?;
@@ -372,6 +421,21 @@ impl Engine {
         }
 
         self.clear_composer(&page, site).await?;
+
+        // 전송 전 기존 마지막 assistant 응답을 기억 (이전 턴 응답을 새 응답으로 오인하지 않기 위함)
+        let pre_sent = eval_str(
+            &page,
+            &format!(
+                r#"(() => {{
+                    const a = document.querySelectorAll({sel});
+                    const el = a[a.length - 1];
+                    return el ? el.innerText : '';
+                }})()"#,
+                sel = js_string(sel.assistant_sel)
+            ),
+        )
+        .await
+        .unwrap_or_default();
 
         // 입력
         let insert = format!(
@@ -410,11 +474,14 @@ impl Engine {
         self.click_send(&page, site).await?;
 
         // 완료 판정: 마지막 assistant 텍스트가 stable_needed회 연속 동일 & stop 버튼 없음
+        // 단, 이번 전송에 의한 세대(텍스트 변화 또는 stop 버튼)를 최소 1회는 관찰해야 완료로 인정한다.
+        // 그렇지 않으면 마감 시 truncated=true 로 부분 응답을 명시한다.
         let stable_needed = 4usize;
         let deadline = Instant::now() + Duration::from_secs(180);
         let mut last = String::new();
         let mut stable = 0usize;
         let mut seen = false;
+        let mut saw_generation = false;
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(700)).await;
             let cur = eval_str(
@@ -437,10 +504,16 @@ impl Engine {
             .await
             .unwrap_or_else(|_| "false".into());
 
+            if stop == "true" {
+                saw_generation = true;
+            }
             if !cur.is_empty() {
                 seen = true;
             }
-            if cur == last && seen && stop == "false" {
+            if !cur.is_empty() && cur != pre_sent {
+                saw_generation = true;
+            }
+            if cur == last && seen && stop == "false" && saw_generation {
                 stable += 1;
             } else {
                 stable = 0;
@@ -450,6 +523,7 @@ impl Engine {
                 break;
             }
         }
+        let truncated = stable < stable_needed;
         if last.is_empty() {
             return Err(EngineError::Timeout);
         }
@@ -474,7 +548,7 @@ impl Engine {
 
         let limit_hit = self.is_limit_banner(&page).await;
         drop(browser); // 브라우저는 유지 (로그인 세션)
-        Ok(SendOutcome { text: last, limit_hit, code_blocks })
+        Ok(SendOutcome { text: last, limit_hit, code_blocks, truncated })
     }
 
     /// 이전 동작과의 호환: ChatGPT send
