@@ -204,8 +204,9 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `electron-updater` 내장 (`setupAutoUpdate()`): 시작 시 1회 체크 + 트레이 "업데이트 확인". 코드 서명 없음.
 - `RELEASING.md` — 릴리즈 절차 문서화 (GitHub Releases 기반).
 - x64 per-user NSIS 인스톨러 (`desktop/dist/CodeBridge Setup 0.1.0.exe`).
-- **알려진 결함(수정 완료)**: settings.json이 깨진 경로를 들고 있으면 앱이 기동하지 않고 로그도 남기지 않았다 → `resolveProjectDir()` + spawn `error` 리스너 추가.
-- 첫 설치 파일(`0.1.0`)에는 이 수정이 포함됨.
+- **알려진 결함(수정 완료)**: settings.json이 깨진 경로를 들고 있으면 앱이 기동하지 않고 로그도 남기지 않았다 → `resolveProjectDir()` + spawn `error` 리스너 + `boot.log` 추가.
+- **주요 결함**: `electron-updater`를 devDependencies에 넣었는데 electron-builder는 dependencies만 asar에 묶는다 → packaged 앱이 `require('electron-updater')` 시 module-not-found로 즉시 종료하고, Windows GUI라 콘솔 출력도 없어 "아무 일도 안 하는 앱"처럼 보였다. **수정: dependencies로 이동 + try/catch로 감싸**, 기동 실패해도 `boot.log`에 남도록 변경.
+- 따라서 이 시점(`e2a0f07`)의 인스톨러부터 정상 동작해야 한다.
 
 ## 남은 Phase 0/1 작업
 
