@@ -9,10 +9,12 @@
     "dist": "electron-builder --win --x64",
     "dist:dir": "electron-builder --win --x64 --dir"
   },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
   "devDependencies": {
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
-    "electron-updater": "^6.8.11",
     "png-to-ico": "^3.0.1"
   },
   "build": {

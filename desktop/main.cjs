@@ -19,7 +19,12 @@ const {
   session,
   nativeImage,
 } = require('electron');
-const { autoUpdater } = require('electron-updater');
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require('electron-updater'));
+} catch (e) {
+  console.error('[updater] require failed:', e);
+}
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -396,6 +401,10 @@ function killChild(proc) {
 }
 
 function setupAutoUpdate() {
+  if (!autoUpdater) {
+    appendLog('updater', '[updater] electron-updater unavailable; skipping\n');
+    return;
+  }
   try {
     autoUpdater.logger = console;
     autoUpdater.autoDownload = true;
