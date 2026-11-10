@@ -208,12 +208,20 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - **주요 결함**: `electron-updater`를 devDependencies에 넣었는데 electron-builder는 dependencies만 asar에 묶는다 → packaged 앱이 `require('electron-updater')` 시 module-not-found로 즉시 종료하고, Windows GUI라 콘솔 출력도 없어 "아무 일도 안 하는 앱"처럼 보였다. **수정: dependencies로 이동 + try/catch로 감싸**, 기동 실패해도 `boot.log`에 남도록 변경.
 - 따라서 이 시점(`e2a0f07`)의 인스톨러부터 정상 동작해야 한다.
 
-## 완전한 UI 셸 (v0.2 준비)
+## 완전한 UI 셸 (v0.2.0)
 
 - `desktop/ui/`에 자체 셸 구현: 커스텀 타이틀바(드래그 영역 + 최소화/최대화/닫기), 사이드바(작업/로그/설정), 상태바(브릿지·ChatGPT·Gemini·메시지 수·업데이트 상태).
 - 채팅 본문은 opencode 웹 UI를 `<iframe>`으로 임베드하되 전체 프레임과 사이드바+상태바가 우리 디자인이므로 "실제 앱처럼" 보인다.
 - `ui/preload.cjs` → `window.codebridge.*` API 노출 (windowAction / getStatus / pickProject / restartBridge / reopenChrome / tailLogs / checkForUpdates).
 - main.cjs frameless(`frame: false`)로 전환, `ui/` 추가를 `build.files`에 포함.
+- CSP 인라인 핸들러 위반 수정(shell.html의 onerror 제거) — 렌더러 콘솔에서 "Refused to execute inline event handler"가 떠서 조사함.
+- 패키지드 앱 검증: 창 핸들 정상(메인 윈도우 handle≠0), 9224/7891/9333 LISTEN, `/v1/probe` → ChatGPT·Gemini 모두 OK, 창 제목 "CodeBridge".
+- **자동 업데이트 E2E 검증 완료 (v0.2.0 기준)**:
+  - 인스톨러 이름을 `CodeBridge-Setup-${version}.${ext}`로 고정(latest.yml과 불일치하던 문제 수정).
+  - 저장소를 public으로 전환 (인앱 업데이트가 `releases.atom` + `latest.yml`을 무인증으로 조회해야 함).
+  - v0.1.0 릴리스를 이름/latest.yml이 맞는 에셋으로 재생성.
+  - 패키지드 앱에서 `/releases/latest` → 302 → JSON(tag_name v0.1.0) 확인, 업데이터가 `Update for version 0.1.0 is not available`까지 도달함을 디버그 패치로 확인 후 원복.
+  - (참고) 릴리스 재생성 직후에 앱을 띄우면 GitHub CDN 전파 전이라 "No published versions on GitHub"가 잠깐 날 수 있음 — 실제 원인 없음.
 
 ## 남은 Phase 0/1 작업
 
