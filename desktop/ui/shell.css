@@ -196,6 +196,44 @@ button { font-family: inherit; cursor: pointer; }
 .warn-text { color: var(--warn); }
 .err-text { color: var(--danger); }
 
+/* ---------- 로그인 필요 배너 ---------- */
+.login-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 16px; background: #2d1a1a; border-bottom: 1px solid #5a2c2c;
+  color: #ffb1a8; font-size: 12px; flex-shrink: 0;
+}
+.login-banner.hidden { display: none; }
+.login-banner-icon {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--danger); color: #fff; font-size: 11px; font-weight: 800;
+  display: grid; place-items: center; flex-shrink: 0;
+}
+.login-banner-text { flex: 1; min-width: 0; }
+.btn-danger-small {
+  border: 1px solid #7a3737; background: #3d2121; color: #ffb1a8;
+  border-radius: 6px; padding: 4px 10px; font-size: 11px;
+  transition: background 0.12s;
+}
+.btn-danger-small:hover { background: #553030; }
+
+/* ---------- 인수인계 뷰 ---------- */
+.handover-body { padding: 16px 22px; overflow: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+.handover-status { font-size: 12px; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border-soft); }
+.handover-status.ok-text { color: var(--accent-2); }
+.handover-status.err-text { color: var(--danger); }
+.handover-list { display: flex; flex-direction: column; gap: 6px; }
+.handover-item {
+  display: grid; grid-template-columns: 150px 130px 1fr; gap: 10px; align-items: baseline;
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 8px;
+  padding: 8px 12px; font-family: var(--mono); font-size: 11px; line-height: 1.5;
+}
+.handover-at { color: var(--text-dim); }
+.handover-kind { color: var(--accent); }
+.handover-item.ok .handover-kind { color: var(--accent-2); }
+.handover-item.warn .handover-kind { color: var(--warn); }
+.handover-item.err .handover-kind { color: var(--danger); }
+.handover-detail { color: var(--text); word-break: break-all; }
+
 /* ---------- 상태바 ---------- */
 #statusbar {
   height: var(--statusbar-h); flex-shrink: 0;

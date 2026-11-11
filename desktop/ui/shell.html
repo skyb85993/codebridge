@@ -35,6 +35,9 @@
         <button class="nav-item" data-view="logs">
           <span class="nav-icon">&#x1F4C4;</span> 로그
         </button>
+        <button class="nav-item" data-view="handover">
+          <span class="nav-icon">&#x1F501;</span> 인수인계
+        </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon">&#x2699;</span> 설정
         </button>
@@ -54,6 +57,11 @@
     <main id="content">
       <!-- 작업 뷰 -->
       <section id="view-work" class="view active">
+        <div id="login-banner" class="login-banner hidden" role="alert">
+          <span class="login-banner-icon">!</span>
+          <span id="login-banner-text" class="login-banner-text">로그인이 필요합니다</span>
+          <button id="login-banner-action" class="btn btn-danger-small">전용 Chrome 열기</button>
+        </div>
         <div id="work-overlay" class="work-overlay hidden" role="alert">
           <div class="work-overlay-card">
             <div class="work-overlay-icon">!</div>
@@ -78,6 +86,21 @@
           <button id="logs-refresh" class="btn btn-secondary">새로고침</button>
         </div>
         <pre id="logs-output" class="logs">불러오는 중…</pre>
+      </section>
+
+      <!-- 인수인계 뷰 -->
+      <section id="view-handover" class="view">
+        <div class="view-head">
+          <div>
+            <h2>인수인계</h2>
+            <p class="muted">무료 한도에 걸리면 브릿지가 자동으로 새 채팅/Gemini로 이어갑니다. 수동으로도 실행할 수 있습니다.</p>
+          </div>
+          <button id="handover-now" class="btn btn-secondary">지금 인수인계</button>
+        </div>
+        <div class="handover-body">
+          <div id="handover-status" class="handover-status muted">상태를 확인하는 중…</div>
+          <div id="handover-list" class="handover-list">최근 기록이 없습니다.</div>
+        </div>
       </section>
 
       <!-- 설정 뷰 -->

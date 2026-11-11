@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::AtomicBool,
+    Arc,
+};
 
 use axum::{
     routing::{get, post},
@@ -17,6 +20,8 @@ mod translate;
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<cfg::Config>,
+    /// "지금 인수인계" 버튼을 눌렀는지 (one-shot). 다음 browser-mode 요청이 소비한다.
+    pub manual_handover: Arc<AtomicBool>,
 }
 
 #[tokio::main]
@@ -33,7 +38,12 @@ async fn main() {
         .route("/v1/models", get(api::list_models))
         .route("/v1/probe", get(api::probe_web))
         .route("/v1/chat/completions", post(api::chat_completions))
-        .with_state(AppState { cfg: Arc::new(cfg) });
+        .route("/v1/handover/trigger", post(api::trigger_handover))
+        .route("/v1/handover/events", get(api::handover_events))
+        .with_state(AppState {
+            cfg: Arc::new(cfg),
+            manual_handover: Arc::new(AtomicBool::new(false)),
+        });
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

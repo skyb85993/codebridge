@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: bridge/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('bridge/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Bridge tests
+        run: cargo test --release
+        working-directory: bridge
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop deps
+        run: npm ci
+        working-directory: desktop
+
+      - name: Syntax check renderer/main
+        shell: pwsh
+        run: |
+          node --check desktop/main.cjs
+          node --check desktop/ui/shell.js
+          node --check desktop/ui/preload.cjs
+          node --check desktop/ui/spa-seed.cjs
+
+      - name: Testpages DOM contract regression
+        run: node scripts/testpages-check.mjs
+
+      - name: Packaging sanity (electron-builder --dir)
+        run: npm run dist -- --dir
+        working-directory: desktop

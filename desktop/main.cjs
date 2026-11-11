@@ -586,6 +586,36 @@ async function bootUI() {
 }
 
 // ---------- 셸 IPC 브릿지 ----------
+function httpPostJson(port, pathname, body, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body || {});
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (d) => (raw += d));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, json: JSON.parse(raw) }); }
+          catch { resolve({ status: res.statusCode, json: null, body: raw }); }
+        });
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
 function httpGetJson(port, pathname, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -693,6 +723,34 @@ ipcMain.handle('bridge:restart', async () => {
 ipcMain.handle('chrome:reopen', async () => {
   await reopenChromeAndWait();
   return true;
+});
+
+// 로그인 필요 배너용: 전용 Chrome을 죽이지 않고 (필요하면) 살려서 앞에 띄운다
+ipcMain.handle('chrome:launch', async () => {
+  try {
+    const r = await httpGetRaw(CDP_PORT, '/json/version', 1500);
+    if (r.status === 200) return { launched: false, alreadyRunning: true };
+  } catch {}
+  spawnChrome();
+  return { launched: true, alreadyRunning: false };
+});
+
+ipcMain.handle('handover:trigger', async () => {
+  try {
+    const r = await httpPostJson(BRIDGE_PORT, '/v1/handover/trigger', {}, 5000);
+    return r.json || { ok: false, message: `브릿지 응답 오류 (${r.status})` };
+  } catch (e) {
+    return { ok: false, message: `브릿지에 연결할 수 없습니다: ${e && e.message ? e.message : e}` };
+  }
+});
+
+ipcMain.handle('handover:events', async () => {
+  try {
+    const r = await httpGetJson(BRIDGE_PORT, '/v1/handover/events', 5000);
+    return r.json || { events: [] };
+  } catch (e) {
+    return { events: [], error: String(e && e.message ? e.message : e) };
+  }
 });
 
 ipcMain.on('spa:bootstrapSync', (e) => {

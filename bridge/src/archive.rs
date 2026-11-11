@@ -95,6 +95,55 @@ impl Archive {
         let _ = writeln!(f, "---\n");
     }
 
+    fn handover_log_path(&self) -> PathBuf {
+        self.dir.join("handover.log")
+    }
+
+    /// 인수인계 메타 이벤트를 JSONL로 기록한다 (대화 본문이 아니라서 archive 설정과 무관하게 항상 기록).
+    /// 파일이 64KB를 넘으면 마지막 128줄만 남긴다.
+    pub fn log_handover_event(&self, kind: &str, detail: &str) {
+        let event = serde_json::json!({
+            "at": chrono_like_datetime(),
+            "kind": kind,
+            "detail": detail,
+        });
+        let line = match serde_json::to_string(&event) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(self.handover_log_path()) {
+            let _ = writeln!(f, "{line}");
+        }
+        // 상한 관리: 64KB 초과 시 마지막 128줄만 보존
+        if let Ok(meta) = fs::metadata(self.handover_log_path()) {
+            if meta.len() > 64 * 1024 {
+                if let Ok(content) = fs::read_to_string(self.handover_log_path()) {
+                    let kept: Vec<&str> = content.lines().collect();
+                    let keep_from = kept.len().saturating_sub(128);
+                    let trimmed = kept[keep_from..].join("\n");
+                    let _ = fs::write(self.handover_log_path(), format!("{trimmed}\n"));
+                }
+            }
+        }
+    }
+
+    /// 최근 인수인계 이벤트를 시간 순으로 돌려준다 (과거→최근).
+    pub fn handover_events(&self, limit: usize) -> Vec<serde_json::Value> {
+        let Ok(content) = fs::read_to_string(self.handover_log_path()) else {
+            return Vec::new();
+        };
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines
+            .iter()
+            .rev()
+            .take(limit)
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
     /// 임의의 산출물(인수인계 팩 등)을 저장하고 경로를 돌려준다.
     pub fn write_artifact(&self, name: &str, content: &str) -> Option<PathBuf> {
         let path = self.dir.join(name);

@@ -28,6 +28,30 @@ pub async fn health() -> &'static str {
     "ok: CodeBridge bridge"
 }
 
+/// "지금 인수인계" 수동 트리거 — 다음 browser-mode 요청에서 인수인계 체인을 강제한다.
+pub async fn trigger_handover(State(app): State<AppState>) -> Json<Value> {
+    if app.cfg.automation.mode != "browser" {
+        return Json(json!({
+            "ok": false,
+            "message": "mock 모드에서는 인수인계를 쓸 수 없습니다 (config.toml의 [automation] mode를 browser로)",
+        }));
+    }
+    app.manual_handover.store(true, Ordering::SeqCst);
+    Json(json!({
+        "ok": true,
+        "message": "다음 요청에서 자동으로 인수인계가 실행됩니다",
+    }))
+}
+
+/// 최근 인수인계 이벤트 목록.
+pub async fn handover_events(State(_app): State<AppState>) -> Json<Value> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let arc = archive::Archive::new(&cwd.to_string_lossy());
+    Json(json!({
+        "events": arc.handover_events(30),
+    }))
+}
+
 /// OpenAI 호환 모델 목록.
 pub async fn list_models() -> Json<Value> {
     Json(json!({
@@ -449,9 +473,14 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         .map(msg_tool_text)
         .unwrap_or_default();
 
+    let manual_flag = app.manual_handover.swap(false, Ordering::SeqCst);
     // 한도 배너 감지 또는 사용자 수동 트리거(현재 사용자 메시지에만) → 인수인계 팩 → 체인 순서로 재전송
-    let manual_handover = latest_user.contains("지금 인수인계");
+    let manual_handover = latest_user.contains("지금 인수인계") || manual_flag;
     if outcome.limit_hit || manual_handover {
+        arc.log_handover_event(
+            "handover_started",
+            &format!("site={active_site:?} limit_hit={} manual={} msgs={}", outcome.limit_hit, manual_flag, req.messages.len()),
+        );
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
             .messages
@@ -493,6 +522,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                 match engine.send_and_await_site(&retry, active_site).await {
                                     Ok(o2) => {
                                         if o2.limit_hit {
+                                            arc.log_handover_event("same_site_limit", "새 채팅에서도 한도 유지");
                                             last_err = "같은 사이트 새 채팅에서도 한도 유지".into();
                                             continue; // 체인 다음 단계
                                         }
@@ -500,15 +530,18 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                         blocks = o2.code_blocks;
                                         truncated = o2.truncated;
                                         chain_done = true;
+                                        arc.log_handover_event("same_site_ok", "같은 사이트 새 채팅에서 이어감");
                                         break;
                                     }
                                     Err(e) => {
+                                        arc.log_handover_event("same_site_error", &e.to_string());
                                         last_err = format!("재전송 실패: {e}");
                                         continue;
                                     }
                                 }
                             }
                             Err(e) => {
+                                arc.log_handover_event("rotate_error", &e.to_string());
                                 last_err = format!("새 채팅 교체 실패: {e}");
                                 continue;
                             }
@@ -524,6 +557,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                 match engine.send_and_await_site(&retry, active_site).await {
                                     Ok(o2) => {
                                         if o2.limit_hit {
+                                            arc.log_handover_event("gemini_limit", "Gemini 한도 배너 — 체인 중단");
                                             last_err = "Gemini 재전송에서도 한도 배너 — 체인 중단".into();
                                             // 체인 종료: Gemini가 마지막 단계이므로 폴백 없음
                                             break;
@@ -532,6 +566,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                                         blocks = o2.code_blocks;
                                         truncated = o2.truncated;
                                         chain_done = true;
+                                        arc.log_handover_event("gemini_ok", "Gemini로 이어감");
                                         break;
                                     }
                                     Err(e) => {
@@ -542,6 +577,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                             }
                             Err(e) => {
                                 last_err = format!("Gemini 새 채팅 교체 실패: {e}");
+                                arc.log_handover_event("gemini_rotate_error", &e.to_string());
                                 continue;
                             }
                         }
@@ -552,7 +588,10 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                 }
             }
             if !chain_done {
+                arc.log_handover_event("chain_failed", &last_err);
                 raw.push_str(&format!("\n\n(인수인계 체인 실패: {last_err})"));
+            } else {
+                arc.log_handover_event("chain_ok", &format!("site={active_site:?}"));
             }
         }
     }

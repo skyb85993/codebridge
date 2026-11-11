@@ -23,6 +23,15 @@ contextBridge.exposeInMainWorld('codebridge', {
   async tailLogs() {
     return ipcRenderer.invoke('logs:tail');
   },
+  async triggerHandover() {
+    return ipcRenderer.invoke('handover:trigger');
+  },
+  async getHandoverEvents() {
+    return ipcRenderer.invoke('handover:events');
+  },
+  async launchDedicatedChrome() {
+    return ipcRenderer.invoke('chrome:launch');
+  },
   async checkForUpdates() {
     return ipcRenderer.invoke('updater:check');
   },

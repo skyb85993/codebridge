@@ -13,3 +13,4 @@ node_modules
 /.chrome-profile/
 /desktop/resources/bridge/*.exe
 /desktop/resources/opencode/*.exe
+.testpages-profile/
