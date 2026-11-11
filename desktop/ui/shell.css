@@ -132,7 +132,8 @@ button { font-family: inherit; cursor: pointer; }
 .view { position: absolute; inset: 0; display: none; }
 .view.active { display: flex; flex-direction: column; }
 
-#view-work { background: var(--bg); position: relative; }
+/* .view 클래스의 position:absolute; inset:0 을 상속받아 iframe이 전체를 채움 (overlay는 여기에 고정) */
+#view-work { background: var(--bg); }
 .work-overlay {
   position: absolute; inset: 0; z-index: 5;
   display: flex; align-items: center; justify-content: center;
