@@ -51,7 +51,7 @@ jobs:
           }
 
       - name: Build installer
-        run: npm run dist
+        run: npm run dist -- --publish never
         working-directory: desktop
 
       - name: Extract release notes from CHANGELOG
