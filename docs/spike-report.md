@@ -267,6 +267,16 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 
 **검증**: `cargo test --release` 22/22 통과, 패키지드 앱 재설치형 검증(신규 인스턴스+초기화된 SPA 저장소) 완료, mock 모델 browser 모드에서 mock 경로로 답함 확인, 실사용 E2E는 상단 "iframe 채팅 실사용 검증" 참조.
 
+## CI/CD + v0.3.0 (2026-11-11)
+
+- `.github/workflows/ci.yml`: push/PR → cargo test + node --check + testpages 계약 검사 → **통과**
+- `.github/workflows/release.yml`: 태그 `v*` push → 러너에서 `cargo build --release` → `npm ci` → `npm run dist -- --publish never` → CHANGELOG에서 릴리스 노트 추출 → `gh release create` (에셋 3종) → **성공 (v0.3.0)**
+  - 첫 시도는 `electron-builder`가 publish 설정을 가지고 GH_TOKEN 없이 자동 배포를 시도해 실패 → `--publish never`로 빌드만 하고 gh가 업로드하도록 수정 (`c6e77e5`)
+  - gh 토큰에 `workflow` scope 필요 (초기엔 없어서 push 거부 → `gh auth refresh --scopes workflow`)
+  - v0.3.0 릴리스: CodeBridge-Setup-0.3.0.exe + latest.yml + blockmap, 노트는 CHANGELOG에서 자동 추출
+- 인수인계 이력 뷰/수동 트리거/로그인 배너/testpages 7/7 전부 v0.3.0에 포함
+- (참고) 인앱 자동 업데이트 경로는 v0.2.0→v0.2.1 실증 완료; v0.3.0부터는 CI로 배포된다
+
 ## 남은 Phase 0/1 작업
 
 - [x] ~~CDP(chromiumoxide) 브라우저 자동화 스파이크~~ → **2026-11-10 완료** (PING/PING2 전송+응답 추출 검증)
