@@ -30,6 +30,19 @@ jobs:
         shell: pwsh
         run: Copy-Item bridge/target/release/codebridge-bridge.exe desktop/resources/bridge/codebridge-bridge.exe -Force
 
+      - name: Fetch opencode binary (v2.0.31, from npm)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "opencode-src"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          npm install --prefix $dest --no-audit --no-fund @opencode/cli-windows-x64@2.0.31
+          $src = Join-Path $dest "node_modules\@opencode\cli-windows-x64\bin\opencode.exe"
+          New-Item -ItemType Directory -Force desktop/resources/opencode | Out-Null
+          Copy-Item $src desktop/resources/opencode/opencode.exe -Force
+          $len = (Get-Item desktop/resources/opencode/opencode.exe).Length
+          Write-Host "opencode.exe copied: $len bytes"
+          if ($len -ne 213673352) { throw "opencode.exe size mismatch: $len" }
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24

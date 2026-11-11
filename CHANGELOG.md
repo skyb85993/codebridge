@@ -1,5 +1,9 @@
 # 릴리즈 노트
 
+## v0.4.2 (2026-11-12)
+
+중요 수정: CI에서 `opencode.exe`(210MB)가 gitignore로 제외되어 GitHub 릴리스 빌드에 opencode 서버가 누락되던 문제 — CI에서 npm으로 `@opencode/cli-windows-x64@2.0.31`을 받아 `resources/opencode/opencode.exe`로 복사하도록 수정. v0.4.0/v0.4.1 설치본의 창 미표시/서버 연결 실패 증상이 여기서 비롯됨.
+
 ## v0.4.1 (2026-11-11)
 
 설치/업데이트 UI 브랜드 통일 릴리스.

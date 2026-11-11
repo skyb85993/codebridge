@@ -26,6 +26,24 @@ jobs:
         run: cargo test --release
         working-directory: bridge
 
+      - name: Build bridge (release)
+        run: cargo build --release
+        working-directory: bridge
+
+      - name: Refresh bundled bridge exe
+        shell: pwsh
+        run: Copy-Item bridge/target/release/codebridge-bridge.exe desktop/resources/bridge/codebridge-bridge.exe -Force
+
+      - name: Fetch opencode binary (v2.0.31, from npm)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP "opencode-src"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          npm install --prefix $dest --no-audit --no-fund @opencode/cli-windows-x64@2.0.31
+          $src = Join-Path $dest "node_modules\@opencode\cli-windows-x64\bin\opencode.exe"
+          New-Item -ItemType Directory -Force desktop/resources/opencode | Out-Null
+          Copy-Item $src desktop/resources/opencode/opencode.exe -Force
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
