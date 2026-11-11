@@ -1,6 +1,6 @@
 {
   "name": "codebridge-desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CodeBridge Desktop — 무료 웹 채팅을 모델로 쓰는 독립 코딩 에이전트 앱",
   "main": "main.cjs",
   "private": true,

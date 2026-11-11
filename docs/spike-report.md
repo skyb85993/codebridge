@@ -238,6 +238,35 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
   6. 설치본 브릿지 교체는 Program Files 권한이 필요 (다음 릴리스에 포함).
 - **추가된 모델**: `webchat-chatgpt` (ChatGPT (web)) — opencode.json 2곳 + `/v1/models`. 엔진은 id에 "gemini" 미포함이면 ChatGPT로 분기.
 
+## CodeRabbit 검사 (2026-11-11) — 19건 Major, 전부 수정
+
+`coderabbit review --committed --base-commit 08fc7ef` 전체 변경분 리뷰 결과 19건:
+
+**보안**
+- `bridge/src/api.rs`: 프롬프트 디버그 덤프(codebridge_flatten_debug.txt) 제거
+- 핸드오버 아카이브를 `handover.archive`(기본 false)에 게이트 — 기본 설정에서 대화 평문 저널 기록 안 함
+- `engine.rs find_tab`: substring URL 매칭 → https + 정확히 host 일치만 탭 재사용 (피싱 페이지에 프롬프트 삽입 방지)
+- 한도 배너 감지를 body 전체 → alert/dialog/modal/banner/toast/limit/notice/warning 클래스 요소로 한정 ("rate limit" 같은 대화 문구로 오판 방지)
+
+**안정성**
+- `rotate_new_chat_site`: 새 채팅 후 컴포저 20s 대기 실패를 Err로 (기존엔 무시하고 "완료" 처리)
+- `send_and_await_site` 전체에 프로세스 전역 잠금 (동시 요청이 같은 탭 컴포저 파괴 방지)
+- Chrome 재시작: kill 후 exit 대기 + CDP /json/version 200 확인 후 반환 (트레이/설정의 전용 Chrome 재시작 모두)
+- 셸: iframe은 opencode 서버가 200일 때만 src 설정 (+ 실패 오버레이 + 새로고침/로그 링크)
+
+**정확성**
+- flatten: content 배열 파싱 (`{"type":"text","text":...}`), 스냅샷을 예산 내 행 단위 절단, 사용자 요청은 절대 자르지 않고 초과 시 명시적 에러(400)
+- tool 턴 판정을 마지막 메시지 기준으로 + 실패 징후(success:false/error/failed/denied/거부/실패/오류) 시 실패 메시지
+- 수동 인수인계 감지는 마지막 user 메시지만 검사 (이전 인수인계 요청이 새 요청으로 재촉발되지 않도록)
+- 응답 안정 판정에 "이번 세대(stop 버튼 출현 또는 pre-send 텍스트와의 변화)" 관찰 필수 — 이전 턴 응답을 새 응답으로 오인하던 문제 수정, 180s 마감 미완료 시 `truncated=true` + 파일 승격 중단
+- 잘린 응답은 "이어서 계속" 1회 시도 후에도 미완료면 파일 쓰기 건너뜀 (불완전 코드 승격 방지)
+- Gemini 재전송의 한도 배너도 체크 (체인 무한 성공 처리 방지)
+- mock 모델은 browser 모드 패키지에서도 mock 경로로 라우팅
+- "＋ 새 세션이 안 됨"(프로젝트 미등록)·"모델 기본 숨김"을 해결: **`ui/spa-seed.cjs` 프리로드**를 세션에 등록해 SPA(127.0.0.1:7891) document-start에 localStorage를 시드 — `opencode.global.dat:model`(webchat 3종 visibility=show + recent 기본 ChatGPT), `opencode.global.dat:server`(projects.local + lastProject), `opencode.global.dat:layout`(home.selection). 첫 실행부터 추가 단계 없이 동작 검증(저장소 초기화 → 재실행 → 전부 복원 확인)
+- iframe 레이아웃 회귀 수정: `#view-work`에 준 `position:relative`가 `.view`의 absolute inset:0을 덮어써 iframe이 150px로 붕괴
+
+**검증**: `cargo test --release` 22/22 통과, 패키지드 앱 재설치형 검증(신규 인스턴스+초기화된 SPA 저장소) 완료, mock 모델 browser 모드에서 mock 경로로 답함 확인, 실사용 E2E는 상단 "iframe 채팅 실사용 검증" 참조.
+
 ## 남은 Phase 0/1 작업
 
 - [x] ~~CDP(chromiumoxide) 브라우저 자동화 스파이크~~ → **2026-11-10 완료** (PING/PING2 전송+응답 추출 검증)
