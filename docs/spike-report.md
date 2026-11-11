@@ -267,7 +267,15 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 
 **검증**: `cargo test --release` 22/22 통과, 패키지드 앱 재설치형 검증(신규 인스턴스+초기화된 SPA 저장소) 완료, mock 모델 browser 모드에서 mock 경로로 답함 확인, 실사용 E2E는 상단 "iframe 채팅 실사용 검증" 참조.
 
-## CI/CD + v0.3.0 (2026-11-11)
+## v0.4.0 (2026-11-11)
+
+네이티브 React 프론트엔드로 전면 재작성한 릴리스.
+- 프론트엔드 재구축: opencode SPA iframe 제거 → 자체 React+Vite+Tailwind 프레임리스 셸
+- 백엔드 정리: mock harness 제거 → opencode browser-only
+- 전용 Chrome 지연 실행 (첫 요청 시 브릿지 실행)
+- 자동 업데이트 v0.2.0→v0.4.0 실증
+
+## CI/CD + v0.3.0 (2026-11-11)## CI/CD + v0.3.0 (2026-11-11)
 
 - `.github/workflows/ci.yml`: push/PR → cargo test + node --check + testpages 계약 검사 → **통과**
 - `.github/workflows/release.yml`: 태그 `v*` push → 러너에서 `cargo build --release` → `npm ci` → `npm run dist -- --publish never` → CHANGELOG에서 릴리스 노트 추출 → `gh release create` (에셋 3종) → **성공 (v0.3.0)**

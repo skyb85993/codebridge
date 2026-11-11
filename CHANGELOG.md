@@ -1,5 +1,17 @@
 # 릴리즈 노트
 
+## v0.4.0 (2026-11-11)
+
+네이티브 React 프론트엔드로 전면 재작성한 릴리스.
+
+- **프론트엔드 재구축**: opencode SPA iframe 제거 → 자체 React+Vite+Tailwind 프레임리스 셸 (그라디언트 타이틀바 / 세션 사이드바 / 채팅 / 모델 선택)
+- **백엔드 정리**: mock harness(`fixture.rs`, mock 경로, `/v1/models`의 webchat-mock) 제거 → opencode browser-only
+- **전용 Chrome 지연 실행**: 첫 요청 시 브릿지가 전용 Chrome을 실행(probe는 읽기 전용, 탭 스팸 방지)
+- **레이아웃 버그 수정**: `#view-work` position:relative로 iframe 150px 붕괴하던 회귀
+- **첫 실행 UX**: opencode.json 자동 시드(projectDir + webchat 모델 visibility)로 추가 단계 없이 동작
+- **v0.3.0 수정분 포함**: CI/CD, 인수인계 이력, 로그인 배너, testpages 7/7 회귀
+- 주의: 무서명 배포 (README "설치 시 SmartScreen 경고" 참조)
+
 ## v0.1.0 (2026-11-10)
 
 첫 공개 릴리즈.
@@ -10,12 +22,6 @@
 - `/v1/probe` — 두 사이트 로그인 상태 실시간 확인, 앱 트레이에 표시
 - 인앱 자동 업데이트 (`electron-updater`, GitHub Releases 기준)
 - 설정.json 폴더 선택 + 단일 인스턴스 잠금
-
-## v0.2.1 (미릴리스)
-
-- `webchat-chatgpt` (ChatGPT (web)) 모델 등록 — opencode.json 2곳 + `/v1/models`에 추가 (`gpt-` 금지 규칙 준수)
-- iframe 임베드 실사용 E2E 검증 완료: 새 세션 → ChatGPT (web) → 로블록스 Lua 파일이 실제로 작성됨 (스크래치 폴더)
-- 발견: webchat 모델이 "모델 관리"에서 기본 OFF → 첫 실행 시 표시되지 않음 (활성화 방법 문서화)
 
 ## v0.3.0 (2026-11-11)
 

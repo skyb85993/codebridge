@@ -5,14 +5,14 @@
 
 > 상세 계획 문서는 워크스페이스 밖(`.opencode/plan`)에 있다. 저장소에는 코드만 포함한다.
 
-## 현재 상태 (v0.3.0)
+## 현재 상태 (v0.4.0)
 
 - [x] 브릿지(browser 모드): 실 ChatGPT/Gemini 자동화 — flatten, CDP 전송/감지/추출, 관대 파서, 아카이브, 한도 감지, 인수인계 체인
 - [x] 관대 파서: 코드펜스+경로 주석 → write tool_calls 승격 (유닛 테스트 22개 포함)
 - [x] E2E(실 ChatGPT): 자연어 요청 → 응답 → 파일 생성 (`GameManager.lua`, `HUD.client.lua`, 점프 패드 Lua 등)
 - [x] 인수인계 체인: 한도 도달/수동("지금 인수인계" 버튼) → 인계 팩 생성 → 같은 사이트 새 채팅 → Gemini 로테이션 (실증 완료)
-- [x] **CodeBridge Desktop**: 프레임리스 커스텀 셸(타이틀바/사이드바/상태바 + iframe 내 opencode 웹 UI), 전용 Chrome 자동 실행(9333), 자동 업데이트(electron-updater + GitHub Releases, v0.3.0부터 CI 자동 릴리스)
-- [x] 인수인계 이력 뷰 + 로그인 필요 배너 + 첫 실행 자동 시드(webchat 모델 표시/프로젝트 등록)
+- [x] **CodeBridge Desktop**: 네이티브 React 프론트엔드 풀 재작성(프레임리스 커스텀 셸), 전용 Chrome **지연 실행**(첫 요청 시), 자동 업데이트(electron-updater + GitHub Releases, 태그 푸시 시 CI 자동 릴리스)
+- [x] opencode.json 자동 시드(모델 표시/프로젝트 등록) — 첫 실행부터 추가 단계 없음
 - [x] testpages 회귀 자동화 (`node scripts/testpages-check.mjs`, 7/7)
 - [ ] Roblox Studio 실행으로 생성물 검증 (사용자가 실사용으로 수행 중)
 
@@ -24,14 +24,14 @@ cd codebridge\desktop
 npm install
 npm start        # 이후 dist\ 인스톨러로 배포 (CI: tag push)
 
-# 브릿지 단독 (mock 모드, 9224)
+# 브릿지 단독 (browser 모드, 9224)
 cd codebridge\bridge
 cargo run
 ```
 
-## CodeBridge Desktop (v0.3.0 — 독립 앱)
+## CodeBridge Desktop (v0.4.0 — 독립 앱)
 
-`desktop/`는 **Electron**으로 만든 독립 설치파일 앱입니다. 앱이 전용 Chrome(CDP 9333, 로그인된 전용 프로필)을 자동 실행하고, opencode serve(공식 웹 UI+v2 API)와 브릿지를 자식 프로세스로 띄웁니다. 기본 모드는 **browser(실 ChatGPT/Gemini 자동화)**, 번들 설정은 `desktop/resources/bridge/config.toml`에서 변경 가능합니다. UI는 자체 프레임리스 셸(커스텀 타이틀바/사이드바/상태바) + iframe 내 opencode 웹 UI 구조입니다.
+`desktop/`는 **Electron + React + Vite + Tailwind**로 만든 독립 설치파일 앱입니다. 앱은 opencode serve(v2 API)를 자식 프로세스로 실행하고, opencode 웹 UI 대신 **자체 프레임리스 셸 UI**를 화면에 표시합니다. 전용 Chrome(CDP 9333)은 **지연 실행** — 앱 첫 요청 때 브릿지가 전용 프로필 Chrome을 띄웁니다. 기본 모드는 **browser(실 ChatGPT/Gemini 자동화)**.
 
 ```powershell
 cd codebridge\desktop
