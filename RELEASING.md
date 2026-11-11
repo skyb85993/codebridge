@@ -23,7 +23,7 @@
 - `WIN_CSC_LINK` — .pfx 인증서 (base64 또는 URL)
 - `WIN_CSC_KEY_PASSWORD` — pfx 비밀번호
 
-없으면 무서명 빌드 (SmartScreen 경고는 그대로). 서명하려면 **Microsoft Trusted Signing**(월 ~$9.99, 법인/개인 검증 필요) 또는 코드 서명 인증서를 구매해 위 시크릿에 넣으면 된다.
+없으면 무서명 빌드 (현재 선택). SmartScreen 경고가 뜰 수 있으며, 사용자 안내는 README의 "설치 시 SmartScreen 경고" 절을 따른다. (사용자가 서명하지 않기로 결정, 2026-11-11)
 
 ### 수동 릴리스 (CI 없이)
 
