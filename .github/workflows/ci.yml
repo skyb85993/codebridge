@@ -36,13 +36,14 @@ jobs:
         run: npm ci
         working-directory: desktop
 
-      - name: Syntax check renderer/main
+      - name: Syntax check main/preload/frontend
         shell: pwsh
         run: |
           node --check desktop/main.cjs
-          node --check desktop/ui/shell.js
-          node --check desktop/ui/preload.cjs
-          node --check desktop/ui/spa-seed.cjs
+          node --check desktop/preload.cjs
+          node --check desktop/vite.config.mts
+          node --check desktop/tailwind.config.js
+          node --check desktop/postcss.config.js
 
       - name: Testpages DOM contract regression
         run: node scripts/testpages-check.mjs
