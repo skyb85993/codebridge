@@ -65,7 +65,7 @@ impl Config {
             cfg.server.port = 9224;
         }
         if cfg.automation.mode.is_empty() {
-            cfg.automation.mode = "mock".into();
+            cfg.automation.mode = "browser".into();
         }
         if cfg.automation.cdp_port == 0 {
             cfg.automation.cdp_port = 9333;

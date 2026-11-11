@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 
 use crate::archive;
 use crate::automation;
-use crate::fixture;
 use crate::harness;
 use crate::sse;
 use crate::translate;
@@ -64,12 +63,6 @@ pub async fn list_models() -> Json<Value> {
                 "owned_by": "codebridge"
             },
             {
-                "id": "webchat-mock",
-                "object": "model",
-                "created": 1700000001,
-                "owned_by": "codebridge"
-            },
-            {
                 "id": "webchat-gemini",
                 "object": "model",
                 "created": 1700000002,
@@ -107,179 +100,46 @@ fn user_text(req: &ChatRequest) -> String {
 }
 
 /// OpenAI 호환 채팅 완성 엔드포인트.
-/// Phase 0: mock 모드 — 고정 응답(마크다운 코드펜스)을 관대 파서로 번역해
-/// write tool_calls로 승격까지 왕복 전체를 검증한다.
-/// Phase 1+: browser 모드 — CDP로 로그인된 ChatGPT에 전송·응답 추출.
+/// browser 모드 전용 — CDP로 로그인된 웹 채팅에 전송·응답 추출. (mock 경로는 제거됨)
 pub async fn chat_completions(
     State(app): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
-    // 모델 기반 라우팅: mock 모델은 mock 경로로 강제한다 (패키지 설정이 browser여도
-    // 실제 web 사이트로 트래픽을 보내지 않는다).
-    let is_mock_model = req.model.to_lowercase().contains("mock");
-    if app.cfg.automation.mode == "browser" && !is_mock_model {
-        return browser_completions(&app, &req).await;
-    }
-    if app.cfg.automation.mode != "mock" && !is_mock_model {
+    if app.cfg.automation.mode != "browser" {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "usage: [automation] mode = \"mock\" | \"browser\"",
+            "automation mode must be \"browser\" (the mock harness was removed)",
         )
             .into_response();
     }
 
-    // 루프 가드(모의 모드 전용): 도구 실행 실패 → 동일 요청 재시도 반복을 즉시 끊는다.
-    if req.messages.len() > 5 {
-        let id = next_id();
-        println!("[mock] loop-guard trip msgs={} id={id}", req.messages.len());
-        let content = "(브릿지 루프 가드) 도구 실행 실패가 반복되어 여기서 중단합니다. 원인 수정 후 다시 실행해 주세요.";
-        return if req.stream {
-            sse::stream_response(
-                id,
-                req.model.clone(),
-                content.to_string(),
-                vec![],
-                "stop".to_string(),
-            )
-        } else {
-            Json(json!({
-                "id": id,
-                "object": "chat.completion",
-                "created": sse::now_secs(),
-                "model": req.model,
-                "choices": [{
-                    "index": 0,
-                    "message": { "role": "assistant", "content": content },
-                    "finish_reason": "stop"
-                }],
-                "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
-            }))
-            .into_response()
-        };
-    }
-
-    // [진단] opencode가 요청에 담아 보낸 도구 정의 이름을 덤프한다.
-    if let Some(Value::Array(list)) = &req.tools {
-        let names: Vec<&str> = list
-            .iter()
-            .map(|t| {
-                let f = t.get("function").unwrap_or(t);
-                f.get("name").and_then(|n| n.as_str()).unwrap_or("?")
-            })
-            .collect();
-        println!("[mock] definitions({}) = {}", list.len(), names.join(","));
-    } else {
-        println!("[mock] definitions = <none sent>");
-    }
-
-    let task = user_text(&req);
-    let preview: String = task.chars().take(120).collect();
-
-    // opencode 내부 요청(대화 제목 생성 등)에는 도구 호출 없이 짧은 텍스트만 반환한다.
-    let title_request = task.contains("Reply with only the title");
-
-    // 진단 모드: [INTROSPECT] 요청에는 여러 도구를 섞어 호출해 가용성을 관찰한다.
-    let (tool_calls, content, finish): (Vec<Value>, String, &'static str) =
-        if req.messages.iter().any(|m| m.role == "tool") {
-            // 도구 실행 결과를 받은 턴: 같은 호출을 반복하지 않고 텍스트로 마무리
-            (vec![], fixture::ACK.to_string(), "stop")
-        } else if title_request {
-            (
-                vec![],
-                "CodeBridge 모의 세션".to_string(),
-                "stop",
-            )
-        } else if task.contains("[INTROSPECT]") {
-            (
-                vec![
-                    json!({
-                        "id": "callprobe_read", "type": "function",
-                        "function": { "name": "read", "arguments": "{\"path\":\"README.md\"}" }
-                    }),
-                    json!({
-                        "id": "callprobe_glob", "type": "function",
-                        "function": { "name": "glob", "arguments": "{\"pattern\":\"*.toml\"}" }
-                    }),
-                    json!({
-                        "id": "callprobe_edit", "type": "function",
-                        "function": {
-                            "name": "edit",
-                            "arguments": "{\"path\":\"README.md\",\"oldString\":\"# CodeBridge\",\"newString\":\"# CodeBridge (probe)\"}"
-                        }
-                    }),
-                    json!({
-                        "id": "callprobe_write", "type": "function",
-                        "function": { "name": "write", "arguments": "{\"path\":\"Probe/probe.txt\",\"content\":\"probe\"}" }
-                    }),
-                ],
-                "(introspect) 도구 가용성 점검: read / glob / edit / write 를 하나씩 호출합니다.".to_string(),
-                "tool_calls",
-            )
-        } else {
-            let reply = fixture::parts();
-            let files = translate::lenient::parse(&reply.raw);
-            let (calls, issues) = translate::lenient::to_tool_calls(&files);
-            let mut text = format!("{}{}", reply.intro, reply.outro);
-            if !issues.is_empty() {
-                text.push_str(&format!(
-                    "\n\n(안내: 경로 주석이 없거나 불완전(잘림 등)한 코드 블록 {}개는 저장 대상에서 제외했습니다.)",
-                    issues.len()
-                ));
-            }
-            let f = if calls.is_empty() { "stop" } else { "tool_calls" };
-            (calls, text, f)
-        };
-    let id = next_id();
-
-    println!(
-        "[mock] model={} stream={} msgs={} calls={} id={id} task=\"{preview}\"",
-        req.model,
-        req.stream,
-        req.messages.len(),
-        tool_calls.len()
-    );
-
-    if req.stream {
-        sse::stream_response(id, req.model.clone(), content, tool_calls, finish.to_string())
-    } else {
-        Json(json!({
-            "id": id,
-            "object": "chat.completion",
-            "created": sse::now_secs(),
-            "model": req.model,
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": tool_calls
-                },
-                "finish_reason": finish
-            }],
-            "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
-        }))
-        .into_response()
-    }
+    browser_completions(&app, &req).await
 }
 
-/// 전용 Chrome(9333)/ChatGPT(+Gemini) 상태 점검용 — 앱이 로그인 여부를 표시할 때 사용한다.
+/// 전용 Chrome(9333)/ChatGPT(+Gemini) 상태 점검용 — 앱이 상태를 표시할 때 사용한다.
+/// Chrome이 안 떠 있으면 chrome:false로 보고한다 (읽기 전용, 탭을 만들지 않음).
 pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
     let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
     let cgpt = engine.probe_site(automation::engine::Site::ChatGpt).await;
     let gem = engine.probe_site(automation::engine::Site::Gemini).await;
     let summarize = |name: &str, r: Result<(bool, String, String), automation::engine::EngineError>| {
         match r {
-            Ok((composer, url, title)) => json!({
-                "site": name,
-                "ok": true,
-                "composer": composer,
-                "login_required": !composer,
-                "url": url,
-                "title": title,
-            }),
+            Ok((composer, url, title)) => {
+                let chrome_running = title != "chrome-not-running";
+                json!({
+                    "site": name,
+                    "ok": composer,
+                    "chrome": chrome_running,
+                    "composer": composer,
+                    "login_required": chrome_running && !composer,
+                    "url": url,
+                    "title": title,
+                })
+            }
             Err(e) => json!({
                 "site": name,
                 "ok": false,
+                "chrome": true,
                 "login_required": true,
                 "error": e.to_string(),
             }),
@@ -287,11 +147,14 @@ pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
     };
     let chatgpt = summarize("chatgpt", cgpt);
     let gemini = summarize("gemini", gem);
-    let cg_ok = chatgpt["ok"].as_bool().unwrap_or(false) && !chatgpt["login_required"].as_bool().unwrap_or(true);
-    let gm_ok = gemini["ok"].as_bool().unwrap_or(false) && !gemini["login_required"].as_bool().unwrap_or(true);
+    let chrome_up = chatgpt["chrome"].as_bool().unwrap_or(false) || gemini["chrome"].as_bool().unwrap_or(false);
+    let cg_ok = chatgpt["ok"].as_bool().unwrap_or(false);
+    let gm_ok = gemini["ok"].as_bool().unwrap_or(false);
     Json(json!({
         "ok": cg_ok || gm_ok,
-        "login_required": !(cg_ok || gm_ok),
+        "chrome_running": chrome_up,
+        "login_required": chrome_up && !(cg_ok || gm_ok),
+        "chrome_not_running": !chrome_up,
         "sites": [chatgpt, gemini],
     }))
 }

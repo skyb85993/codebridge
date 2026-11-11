@@ -14,3 +14,5 @@ node_modules
 /desktop/resources/bridge/*.exe
 /desktop/resources/opencode/*.exe
 .testpages-profile/
+/desktop/ui-build/
+/desktop/ui-build/

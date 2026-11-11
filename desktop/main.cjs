@@ -1,13 +1,12 @@
 /**
- * CodeBridge Desktop — Electron main process.
+ * CodeBridge Desktop — Electron main process (v0.4.x)
  *
  * 역할:
- *   1) 사용자 프로젝트 폴더 선택 (최초 실행 시)
- *   2) 전용 Chrome(CDP 9333)을 자동 실행한다 — 사용자가 수동으로 크롬을 열 필요가 없다
- *   3) Rust 브릿지(codebridge-bridge.exe)를 자식 프로세스로 실행 (127.0.0.1:9224, browser 모드)
- *   4) opencode serve(v2 API+웹 UI)를 자식 프로세스로 실행 (127.0.0.1:7891)
- *   5) 세션 Basic 인증을 창의 모든 요청에 주입 후 opencode 웹 UI 로드
- *   6) 트레이 메뉴(창 열기/프로젝트 재선택/브릿지·Chrome 재시작/로그인 상태/종료) + 정리(자식 프로세스 종료)
+ *   1) 창(프레임리스) + 트레이 최소 구성 (프로젝트 폴더 변경 / 지금 인수인계 / 업데이트 확인 / 종료)
+ *   2) Rust 브릿지(codebridge-bridge.exe, 127.0.0.1:9224) + opencode serve(127.0.0.1:7891)를 자식 프로세스로 실행
+ *   3) 렌더러가 필요로 하는 IPC만 노출 (Basic 인증은 main에서만)
+ *   4) 전용 Chrome은 "명령이 들어올 때" 브릿지가 띄운다 (지연 실행, main은 관리하지 않음)
+ *   5) 프로젝트 폴더가 없으면 렌더러가 폴더 선택 화면을 띄운다 (네이티브 대화상자 최소화)
  */
 const {
   app,
@@ -15,8 +14,6 @@ const {
   Tray,
   Menu,
   dialog,
-  shell,
-  session,
   nativeImage,
   ipcMain,
 } = require('electron');
@@ -31,7 +28,6 @@ const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
 
-// userData 경로를 dev/packaged 공통으로 고정한다 (%APPDATA%\CodeBridge)
 app.setPath('userData', path.join(app.getPath('appData'), 'CodeBridge'));
 
 const IS_DEV = !app.isPackaged;
@@ -40,47 +36,43 @@ const BRIDGE_EXE = path.join(RES, 'bridge', 'codebridge-bridge.exe');
 const BRIDGE_CONFIG = path.join(RES, 'bridge', 'config.toml');
 const OPENCODE_EXE = path.join(RES, 'opencode', 'opencode.exe');
 const OPENCODE_JSON_TEMPLATE = path.join(RES, 'opencode.json');
-const UI_DIR = path.join(__dirname, 'ui');
+const UI_DIR = path.join(__dirname, 'ui-build');
 const DATA_DIR = app.getPath('userData');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
+const CHROME_PROFILE = path.join(DATA_DIR, 'chrome-profile');
 
 const SERVE_PORT = 7891;
 const BRIDGE_PORT = 9224;
-const CDP_PORT = 9333;
-
-const CHROME_CANDIDATES = [
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-];
-const CHROME_PROFILE = path.join(DATA_DIR, 'chrome-profile');
 
 let mainWindow = null;
 let tray = null;
 let bridgeProc = null;
 let opencodeProc = null;
-let chromeProc = null;
 let servePassword = '';
 let projectDir = '';
 let appQuitting = false;
-let probeTimer = null;
-let loginRequired = false;
 let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
-let startupFailed = false; // waitForOpencode 실패 여부 (셸의 iframe 게이팅에 사용)
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
 
-function logStream(name) {
-  ensureDir(LOG_DIR);
-  return fs.createWriteStream(path.join(LOG_DIR, `${name}.log`), { flags: 'a' });
+function appendLog(name, line) {
+  try {
+    ensureDir(LOG_DIR);
+    fs.appendFileSync(path.join(LOG_DIR, `${name}.log`), line);
+  } catch {}
 }
 
+function logStream(name) {
+  const logPath = path.join(LOG_DIR, `${name}.log`);
+  ensureDir(LOG_DIR);
+  const stream = fs.createWriteStream(logPath, { flags: 'a' });
+  return { stream, logPath };
+}
+
+// ---------- 설정 ----------
 function readSettings() {
   try {
     return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
@@ -88,135 +80,101 @@ function readSettings() {
     return {};
   }
 }
-
-async function resolveProjectDir() {
-  let dir = (readSettings().projectDir || '').trim();
-  if (dir && fs.existsSync(dir)) return dir;
-  // 경로가 유효하지 않으면 무효화하고 폴더를 다시 고르게 한다
-  if (dir) {
-    appendLog('app', `[app] stored projectDir invalid: ${dir}\n`);
-    writeSettings({ ...readSettings(), projectDir: '' });
-  }
-  return null;
-}
-
 function writeSettings(s) {
   ensureDir(DATA_DIR);
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
 }
+async function resolveProjectDir() {
+  const saved = readSettings().projectDir;
+  if (saved && fs.existsSync(saved)) return saved;
+  if (saved) appendLog('boot', `[boot] saved projectDir missing: ${saved}\n`);
+  return '';
+}
 
-/** 프로젝트 폴더에 opencode.json이 없으면 번들된 기본값을 복사한다 (있으면 건드리지 않음) */
+function killChild(proc) {
+  if (!proc || proc.killed) return;
+  try {
+    spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true });
+  } catch {
+    try { proc.kill(); } catch {}
+  }
+}
+
+// ---------- opencode.json (전역 템플릿 → 프로젝트 폴더 동기화) ----------
 function ensureOpencodeJson(dir) {
   const target = path.join(dir, 'opencode.json');
-  if (fs.existsSync(target)) return false;
   try {
+    if (fs.existsSync(target)) {
+      // 개발 잔재(mock 모델)가 남아 있으면 템플릿으로 교체
+      const cur = fs.readFileSync(target, 'utf8');
+      if (cur.includes('webchat-mock')) {
+        fs.copyFileSync(OPENCODE_JSON_TEMPLATE, target);
+        appendLog('boot', '[boot] opencode.json migrated (mock removed)\n');
+      }
+      return false;
+    }
     fs.copyFileSync(OPENCODE_JSON_TEMPLATE, target);
     return true;
   } catch (e) {
-    console.error('opencode.json template copy failed:', e);
+    appendLog('boot', `[boot] opencode.json ensure failed: ${e}\n`);
     return false;
   }
 }
 
-async function pickProjectFolder() {
-  const r = await dialog.showOpenDialog({
-    title: 'CodeBridge — 프로젝트 폴더 선택',
-    message: '로블록스 프로젝트의 루트 폴더를 선택하세요',
-    properties: ['openDirectory', 'createDirectory'],
-  });
-  if (r.canceled || !r.filePaths.length) return null;
-  return r.filePaths[0];
+function pickProjectFolder() {
+  return dialog
+    .showOpenDialog(mainWindow, {
+      title: 'CodeBridge — 프로젝트 폴더 선택',
+      message: '로블록스 프로젝트의 루트 폴더를 선택하세요',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    .then((r) => (r.canceled || !r.filePaths.length ? null : r.filePaths[0]));
 }
 
+// ---------- 서비스 spawn ----------
 function spawnBridge(cwd) {
-  if (bridgeProc) {
-    try { bridgeProc.kill(); } catch {}
-    bridgeProc = null;
-  }
-  const out = logStream('bridge');
-  console.log('[bridge] spawn', BRIDGE_EXE, 'cwd=', cwd);
-  bridgeProc = spawn(BRIDGE_EXE, [], {
-    cwd,
-    env: { ...process.env, CODEBRIDGE_CONFIG: BRIDGE_CONFIG },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  bridgeProc.stdout.pipe(out);
-  bridgeProc.stderr.pipe(out);
+  if (bridgeProc) killChild(bridgeProc);
+  const { stream } = logStream('bridge');
+  const env = {
+    ...process.env,
+    CODEBRIDGE_CONFIG: BRIDGE_CONFIG,
+    CODEBRIDGE_CHROME_PROFILE: CHROME_PROFILE,
+  };
+  bridgeProc = spawn(BRIDGE_EXE, [], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  bridgeProc.stdout.pipe(stream);
+  bridgeProc.stderr.pipe(stream);
   bridgeProc.on('error', (e) => {
-    console.error('[bridge] spawn error', e);
     appendLog('bridge', `[bridge] spawn error: ${e}\n`);
+    console.error('[bridge] spawn error', e);
   });
   bridgeProc.on('exit', (code) => {
-    console.log('[bridge] exit', code);
-    appendLog('bridge', `[bridge] exit code=${code}\n`);
+    appendLog('bridge', `[bridge] exited code=${code}\n`);
   });
-}
-
-function findBrowserExe() {
-  return CHROME_CANDIDATES.find((p) => fs.existsSync(p)) || null;
-}
-
-function appendLog(name, text) {
-  try {
-    ensureDir(LOG_DIR);
-    fs.appendFileSync(path.join(LOG_DIR, `${name}.log`), text);
-  } catch {}
+  appendLog('bridge', `[bridge] spawn pid=${bridgeProc.pid} cwd=${cwd}\n`);
+  return bridgeProc;
 }
 
 function spawnOpencode(cwd) {
-  if (opencodeProc) {
-    try { opencodeProc.kill(); } catch {}
-    opencodeProc = null;
-  }
-  const out = logStream('opencode');
-  console.log('[opencode] spawn serve port=' + SERVE_PORT, 'cwd=', cwd);
-  opencodeProc = spawn(
-    OPENCODE_EXE,
-    ['serve', '--hostname', '127.0.0.1', '--port', String(SERVE_PORT)],
-    { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-  );
-  opencodeProc.stdout.pipe(out);
-  opencodeProc.stderr.pipe(out);
+  if (opencodeProc) killChild(opencodeProc);
+  const { stream } = logStream('opencode');
+  servePassword = require('crypto').randomBytes(24).toString('base64url');
+  const args = ['serve', '--hostname', '127.0.0.1', '--port', String(SERVE_PORT)];
+  const env = {
+    ...process.env,
+    OPENCODE_SERVER_PASSWORD: servePassword,
+  };
+  opencodeProc = spawn(OPENCODE_EXE, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  opencodeProc.stdout.pipe(stream);
+  opencodeProc.stderr.pipe(stream);
   opencodeProc.on('error', (e) => {
-    console.error('[opencode] spawn error', e);
     appendLog('opencode', `[opencode] spawn error: ${e}\n`);
-  });
-  opencodeProc.stdout.on('data', (chunk) => {
-    const line = String(chunk);
-    const m = line.match(/server password\s*(\S+)/);
-    if (m) servePassword = m[1];
+    console.error('[opencode] spawn error', e);
   });
   opencodeProc.on('exit', (code) => {
-    console.log('[opencode] exit', code);
-    appendLog('opencode', `[opencode] exit code=${code}\n`);
+    appendLog('opencode', `[opencode] exited code=${code}\n`);
   });
-}
-
-function httpGet(pathname, password, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const auth = Buffer.from(`opencode:${password}`).toString('base64');
-    const req = http.request(
-      {
-        host: '127.0.0.1',
-        port: SERVE_PORT,
-        path: pathname,
-        method: 'GET',
-        headers: { Authorization: `Basic ${auth}` },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        let body = '';
-        res.on('data', (d) => (body += d));
-        res.on('end', () => resolve({ status: res.statusCode, body }));
-      },
-    );
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'));
-    });
-    req.on('error', reject);
-    req.end();
-  });
+  appendLog('opencode', `[opencode] spawn serve port=${SERVE_PORT} cwd=${cwd}\n`);
+  return opencodeProc;
 }
 
 function httpGetRaw(port, pathname, timeoutMs = 2500) {
@@ -235,360 +193,28 @@ function httpGetRaw(port, pathname, timeoutMs = 2500) {
   });
 }
 
-async function waitForChrome(timeoutMs = 25000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await httpGetRaw(CDP_PORT, '/json/version', 2000);
-      if (r.status === 200) return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-
-async function probeLoginOnce() {
-  try {
-    const r = await httpGetRaw(BRIDGE_PORT, '/v1/probe', 6000);
-    if (r.status === 200) {
-      try {
-        const v = JSON.parse(r.body);
-        loginRequired = !!v.login_required;
-        if (tray) tray.setToolTip(loginRequired ? 'CodeBridge — ChatGPT 로그인 필요' : 'CodeBridge Desktop — 로그인됨');
-        appendLog('probe', `[probe] login_required=${loginRequired} url=${v.url}\n`);
-        return;
-      } catch {}
-    }
-  } catch {}
-  loginRequired = true;
-  if (tray) tray.setToolTip('CodeBridge — Chrome/브릿지 연결 대기 중');
-}
-
-function startProbePolling() {
-  if (probeTimer) clearInterval(probeTimer);
-  probeTimer = setInterval(probeLoginOnce, 8000);
-  // 즉시 1회
-  probeLoginOnce();
-}
-
-async function waitForOpencode(timeoutMs = 90000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (servePassword) {
-      try {
-        const r = await httpGet('/api/session', servePassword, 2500);
-        if (r.status === 200) return true;
-      } catch {}
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-
-function splash(message, sub) {
-  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>CodeBridge</title>
-<style>body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',sans-serif}h1{font-size:20px;color:#58a6ff;margin:0 0 12px}p{color:#8b949e;font-size:13px;max-width:560px;text-align:center;line-height:1.7}code{background:#161b22;padding:2px 6px;border-radius:4px;color:#79c0ff}button{margin-top:18px;padding:8px 20px;background:#238636;border:0;border-radius:6px;color:#fff;font-size:13px;cursor:pointer}</style></head>
-<body><h1>CodeBridge</h1><p>${message}</p>${sub ? `<p>${sub}</p>` : ''}<button onclick="location.href='codebridge://retry'">다시 시도</button></body></html>`;
-  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-}
-
-function injectAuthHeader() {
-  const auth = Buffer.from(`opencode:${servePassword}`).toString('base64');
-  // 인증 헤더는 로컬 opencode 서버로 가는 요청에만 붙인다 (외부 호스트 유출 방지)
-  const filter = { urls: [`http://127.0.0.1:${SERVE_PORT}/*`] };
-  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
-    const { requestHeaders } = details;
-    requestHeaders['Authorization'] = `Basic ${auth}`;
-    callback({ requestHeaders });
-  });
-}
-
-async function startServices() {
-  if (!projectDir) {
-    projectDir = (await resolveProjectDir()) || '';
-  }
-  if (!projectDir) {
-    const picked = await pickProjectFolder();
-    if (!picked) {
-      app.quit();
-      return false;
-    }
-    projectDir = picked;
-    writeSettings({ ...readSettings(), projectDir });
-  }
-  ensureDir(projectDir);
-  ensureOpencodeJson(projectDir);
-  // 전용 Chrome을 먼저 띄운다 (가시 창 — 필요하면 사용자가 로그인/확인할 수 있게)
-  spawnChrome();
-  waitForChrome().then((ok) => appendLog('chrome', `[chrome] cdp_ready=${ok}\n`));
-  spawnBridge(projectDir);
-  spawnOpencode(projectDir);
-  startProbePolling();
-  return true;
-}
-
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1100,
-    minHeight: 700,
-    title: 'CodeBridge',
-    backgroundColor: '#0d1117',
-    frame: false,
-    autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      preload: path.join(UI_DIR, 'preload.cjs'),
-    },
-  });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
-  // 실패 화면의 "다시 시도" 버튼 → codebridge://retry → 서비스 재시작 + UI 재부팅
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (url === 'codebridge://retry') {
-      event.preventDefault();
-      startServices().then((started) => {
-        if (started) bootUI();
-      });
-    }
-  });
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-  mainWindow.loadFile(path.join(UI_DIR, 'shell.html'));
-}
-
-/**
- * 전용 Chrome을 자동 실행한다 (가시 창, CDP 9333, 전용 프로필).
- * 이미 같은 프로필로 Chrome이 실행 중이면 새 창만 열리고 기존 인스턴스를 재사용한다.
- */
-function spawnChrome() {
-  const exe = findBrowserExe();
-  if (!exe) {
-    console.error('[chrome] no browser executable found in candidates');
-    appendLog('chrome', '[chrome] not found\n');
-    return null;
-  }
-  ensureDir(CHROME_PROFILE);
-  const args = [
-    `--remote-debugging-port=${CDP_PORT}`,
-    `--user-data-dir=${CHROME_PROFILE}`,
-    'https://chatgpt.com/',
-  ];
-  console.log('[chrome] spawn', exe);
-  const proc = spawn(exe, args, {
-    env: process.env,
-    stdio: 'ignore',
-    windowsHide: false,
-    detached: true,
-  });
-  proc.on('error', (e) => {
-    console.error('[chrome] spawn error', e);
-    appendLog('chrome', `[chrome] spawn error: ${e}\n`);
-  });
-  chromeProc = proc;
-  appendLog('chrome', `[chrome] spawn pid=${proc.pid} exe=${exe}\n`);
-  return proc;
-}
-
-function killChild(proc) {
-  if (!proc || proc.killed) return;
-  try {
-    spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true });
-  } catch {
-    try { proc.kill(); } catch {}
-  }
-}
-
-/** killChild 이후 실제 종료를 기다린다 (최대 5초). */
-async function stopChildAndWait(proc) {
-  if (!proc || proc.killed) return;
-  await new Promise((resolve) => {
-    const done = () => resolve();
-    proc.once('exit', done);
-    killChild(proc);
-    setTimeout(done, 5000);
-  });
-}
-
-/** Chrome을 내리고, 종료를 기다린 뒤 같은 프로필로 다시 띄우고 CDP가 응답할 때까지 기다린다. */
-async function reopenChromeAndWait() {
-  const old = chromeProc;
-  chromeProc = null;
-  await stopChildAndWait(old);
-  spawnChrome();
-  return waitForChrome(15000);
-}
-
-function setupAutoUpdate() {
-  if (!autoUpdater) {
-    appendLog('updater', '[updater] electron-updater unavailable; skipping\n');
-    return;
-  }
-  try {
-    autoUpdater.logger = console;
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
-
-    autoUpdater.on('update-available', (info) => {
-      updateState = 'available';
-      if (tray) tray.setToolTip(`CodeBridge — 업데이트 ${info.version} 다운로드 중`);
-      appendLog('updater', `[updater] update-available v${info.version}\n`);
-    });
-    autoUpdater.on('update-not-available', (info) => {
-      updateState = 'up-to-date';
-      if (tray) tray.setToolTip('CodeBridge Desktop — 최신 버전');
-      appendLog('updater', `[updater] up-to-date v${info.version}\n`);
-    });
-    autoUpdater.on('download-progress', (p) => {
-      updateState = 'available';
-      if (tray) tray.setToolTip(`CodeBridge — 업데이트 다운로드 중 ${Math.floor(p.percent || 0)}%`);
-    });
-    autoUpdater.on('update-downloaded', (info) => {
-      updateState = 'downloaded';
-      if (tray) tray.setToolTip('CodeBridge — 재시작하면 업데이트가 적용됩니다');
-      appendLog('updater', `[updater] update-downloaded v${info.version}\n`);
-      if (mainWindow) {
-        const r = dialog.showMessageBoxSync(mainWindow, {
-          type: 'info',
-          buttons: ['지금 재시작', '나중에'],
-          defaultId: 0,
-          cancelId: 1,
-          title: 'CodeBridge 업데이트',
-          message: `새 버전(${info.version})이 준비되었습니다. 지금 재시작해서 적용할까요?`,
-        });
-        if (r === 0) {
-          autoUpdater.quitAndInstall();
-        }
-      }
-    });
-    autoUpdater.on('error', (err) => {
-      updateState = 'error';
-      if (tray) tray.setToolTip('CodeBridge — 업데이트 확인 실패');
-      appendLog('updater', `[updater] error: ${err && err.message ? err.message : err}\n`);
-      console.error('[updater] error', err);
-    });
-
-    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
-      console.error('[updater] check failed', e);
-      appendLog('updater', `[updater] check failed: ${e}\n`);
-    });
-  } catch (e) {
-    console.error('[updater] setup failed', e);
-    appendLog('updater', `[updater] setup failed: ${e}\n`);
-  }
-}
-
-function buildTray() {
-  const icon = nativeImage.createFromPath(path.join(RES, 'tray-icon.png'));
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip('CodeBridge Desktop');
-  const menu = Menu.buildFromTemplate([
-    {
-      label: 'CodeBridge 열기',
-      click: () => {
-        if (mainWindow) {
-          if (mainWindow.isMinimized()) mainWindow.restore();
-          mainWindow.show();
-          mainWindow.focus();
-        } else {
-          bootUI();
-        }
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '프로젝트 폴더 다시 선택…',
-      click: async () => {
-        const picked = await pickProjectFolder();
-        if (!picked) return;
-        projectDir = picked;
-        writeSettings({ ...readSettings(), projectDir });
-        startServices();
-        bootUI();
-      },
-    },
-    {
-      label: '브릿지 재시작',
-      click: () => {
-        if (!projectDir) return;
-        spawnBridge(projectDir);
-      },
-    },
-    {
-      label: '전용 Chrome 재시작',
-      click: () => {
-        reopenChromeAndWait();
-      },
-    },
-    {
-      label: '업데이트 확인',
-      click: async () => {
-        if (!autoUpdater) {
-          dialog.showMessageBoxSync({ type: 'warning', title: 'CodeBridge', message: '업데이터가 초기화되지 않았습니다.' });
-          return;
-        }
-        try {
-          const result = await autoUpdater.checkForUpdates();
-          const latest = result && result.updateInfo ? result.updateInfo.version : '?';
-          if (updateState === 'downloaded') {
-            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `새 버전(${latest})이 다운로드되어 있습니다. 종료/재시작 시 자동 설치됩니다.` });
-          } else if (updateState === 'available') {
-            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `새 버전(${latest}) 다운로드 중입니다.` });
-          } else if (updateState === 'up-to-date') {
-            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `현재 버전이 최신입니다 (v${app.getVersion()}).` });
-          } else {
-            dialog.showMessageBoxSync({ type: 'info', title: 'CodeBridge', message: `업데이트 확인 완료 (v${app.getVersion()}, 최신: ${latest}).` });
-          }
-        } catch (e) {
-          dialog.showMessageBoxSync({ type: 'warning', title: 'CodeBridge', message: `업데이트 확인 실패: ${e && e.message ? e.message : e}\n(GitHub 릴리스가 공개된 후 동작합니다)` });
-        }
-      },
-    },
-    { type: 'separator' },
-    {
-      label: '로그 폴더 열기',
-      click: () => shell.openPath(LOG_DIR),
-    },
-    { type: 'separator' },
-    {
-      label: '종료',
-      click: () => {
-        appQuitting = true;
-        app.quit();
-      },
-    },
-  ]);
-  tray.setContextMenu(menu);
-  tray.on('click', () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    } else {
-      bootUI();
-    }
-  });
-}
-
-async function bootUI() {
-  if (!mainWindow) createWindow();
-  const ok = await waitForOpencode();
-  startupFailed = !ok;
-  if (!mainWindow) return;
-  injectAuthHeader();
-  // 셸이 app:getStatus로 상태를 읽어 iframe(src)을 채운다
-  mainWindow.webContents.send('app:ready');
-}
-
-// ---------- 셸 IPC 브릿지 ----------
-function httpPostJson(port, pathname, body, timeoutMs = 5000) {
+function httpGetJson(port, pathname, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body || {});
+    const req = http.request(
+      { host: '127.0.0.1', port, path: pathname, method: 'GET', timeout: timeoutMs },
+      (res) => {
+        let raw = '';
+        res.on('data', (d) => (raw += d));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, json: JSON.parse(raw) }); }
+          catch { resolve({ status: res.statusCode, json: null, body: raw }); }
+        });
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpPostJson(port, pathname, body, headers, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : '';
     const req = http.request(
       {
         host: '127.0.0.1',
@@ -598,6 +224,7 @@ function httpPostJson(port, pathname, body, timeoutMs = 5000) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(data),
+          ...(headers || {}),
         },
         timeout: timeoutMs,
       },
@@ -616,58 +243,193 @@ function httpPostJson(port, pathname, body, timeoutMs = 5000) {
   });
 }
 
-function httpGetJson(port, pathname, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: '127.0.0.1', port, path: pathname, method: 'GET', timeout: timeoutMs },
-      (res) => {
-        let body = '';
-        res.on('data', (d) => (body += d));
-        res.on('end', () => {
-          try { resolve({ status: res.statusCode, json: JSON.parse(body) }); }
-          catch { resolve({ status: res.statusCode, json: null, body }); }
-        });
-      },
-    );
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-function readArchiveCounter(projectDir) {
-  try {
-    const p = path.join(app.getPath('appData'), 'CodeBridge', 'bridge-archive', 'state.json');
-    if (!fs.existsSync(p)) return null;
-    const v = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const key = Object.keys(v.projects || {}).find((k) => k === projectDir || k.endsWith(projectDir) || projectDir.endsWith(k));
-    return key ? v.projects[key].message_count ?? 0 : null;
-  } catch {
-    return null;
-  }
-}
-
-function tailLogsText() {
-  const files = ['bridge.log', 'opencode.log', 'updater.log'];
-  const chunks = [];
-  for (const name of files) {
-    const p = path.join(LOG_DIR, name);
-    if (!fs.existsSync(p)) continue;
+async function waitForBridge(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const st = fs.statSync(p);
-      const len = Math.min(st.size, 64 * 1024);
-      const fd = fs.openSync(p, 'r');
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, st.size - len);
-      fs.closeSync(fd);
-      chunks.push(`===== ${name} =====\n${buf.toString('utf8').trim()}`);
-    } catch (e) {
-      chunks.push(`===== ${name} (읽기 실패) =====`);
-    }
+      const r = await httpGetRaw(BRIDGE_PORT, '/health', 1500);
+      if (r.status === 200) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 300));
   }
-  return chunks.join('\n\n').split('\n').slice(-400).join('\n');
+  return false;
 }
 
+async function waitForOpencode(timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await httpGetRaw(SERVE_PORT, '/global/health', 2000);
+      if (r.status === 200) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function startServices(dir) {
+  if (!dir) return false;
+  ensureDir(DATA_DIR);
+  ensureDir(LOG_DIR);
+  ensureOpencodeJson(dir);
+  spawnBridge(dir);
+  spawnOpencode(dir);
+  const [bridgeOk, opencodeOk] = await Promise.all([waitForBridge(), waitForOpencode()]);
+  appendLog('boot', `[boot] services bridgeOk=${bridgeOk} opencodeOk=${opencodeOk}\n`);
+  return bridgeOk && opencodeOk;
+}
+
+// ---------- 자동 업데이트 ----------
+function setupAutoUpdate() {
+  if (!autoUpdater) {
+    appendLog('updater', '[updater] electron-updater unavailable\n');
+    return;
+  }
+  try {
+    autoUpdater.logger = console;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('update-available', (info) => {
+      updateState = 'available';
+      if (tray) tray.setToolTip(`CodeBridge — 업데이트 ${info.version} 다운로드 중`);
+      appendLog('updater', `[updater] update-available v${info.version}\n`);
+    });
+    autoUpdater.on('update-not-available', () => {
+      updateState = 'up-to-date';
+      if (tray) tray.setToolTip('CodeBridge Desktop');
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      updateState = 'downloaded';
+      if (tray) tray.setToolTip('CodeBridge — 재시작하면 업데이트가 적용됩니다');
+      appendLog('updater', `[updater] update-downloaded v${info.version}\n`);
+      if (mainWindow) {
+        const r = dialog.showMessageBoxSync(mainWindow, {
+          type: 'info',
+          buttons: ['지금 재시작', '나중에'],
+          defaultId: 0,
+          cancelId: 1,
+          title: 'CodeBridge 업데이트',
+          message: `새 버전(${info.version})이 준비되었습니다. 지금 재시작해서 적용할까요?`,
+        });
+        if (r === 0) autoUpdater.quitAndInstall();
+      }
+    });
+    autoUpdater.on('error', (err) => {
+      updateState = 'error';
+      appendLog('updater', `[updater] error: ${err && err.message ? err.message : err}\n`);
+    });
+
+    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
+      appendLog('updater', `[updater] check failed: ${e}\n`);
+    });
+  } catch (e) {
+    appendLog('updater', `[updater] setup failed: ${e}\n`);
+  }
+}
+
+// ---------- 트레이 ----------
+function buildTray() {
+  const icon = nativeImage.createFromPath(path.join(RES, 'tray-icon.png'));
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  tray.setToolTip('CodeBridge Desktop');
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'CodeBridge 열기',
+        click: () => {
+          if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        },
+      },
+      { type: 'separator' },
+      {
+        label: '프로젝트 폴더 변경…',
+        click: async () => {
+          const picked = await pickProjectFolder();
+          if (!picked) return;
+          projectDir = picked;
+          writeSettings({ ...readSettings(), projectDir });
+          appendLog('boot', `[boot] projectDir changed: ${picked}\n`);
+          // 새 프로젝트로 서비스 재시작
+          await startServices(projectDir);
+        },
+      },
+      {
+        label: '지금 인수인계',
+        click: () => {
+          httpPostJson(BRIDGE_PORT, '/v1/handover/trigger', {}, {}, 5000)
+            .then((r) => appendLog('boot', `[boot] handover trigger -> ${r.status} ${r.body ?? ''}\n`))
+            .catch((e) => appendLog('boot', `[boot] handover trigger error: ${e}\n`));
+        },
+      },
+      { type: 'separator' },
+      {
+        label: '업데이트 확인',
+        click: async () => {
+          if (!autoUpdater) {
+            dialog.showMessageBoxSync({ type: 'warning', title: 'CodeBridge', message: '업데이터가 초기화되지 않았습니다.' });
+            return;
+          }
+          try {
+            const result = await autoUpdater.checkForUpdates();
+            const latest = result && result.updateInfo ? result.updateInfo.version : '?';
+            dialog.showMessageBoxSync({
+              type: 'info',
+              title: 'CodeBridge 업데이트',
+              message: updateState === 'downloaded'
+                ? `새 버전(${latest})이 다운로드되어 있습니다. 종료 시 설치됩니다.`
+                : updateState === 'up-to-date'
+                  ? `현재 버전(${app.getVersion()})이 최신입니다.`
+                  : `최신 버전: ${latest} (현재 ${app.getVersion()})`,
+            });
+          } catch (e) {
+            dialog.showMessageBoxSync({
+              type: 'warning',
+              title: 'CodeBridge',
+              message: `업데이트 확인 실패: ${e && e.message ? e.message : e}`,
+            });
+          }
+        },
+      },
+      {
+        label: '종료',
+        click: () => {
+          app.quit();
+        },
+      },
+    ]),
+  );
+}
+
+// ---------- 창 ----------
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 1000,
+    minHeight: 640,
+    title: 'CodeBridge',
+    backgroundColor: '#0a0e14',
+    frame: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+  mainWindow.loadFile(path.join(UI_DIR, 'index.html'));
+}
+
+// ---------- IPC ----------
 ipcMain.on('window:action', (_e, action) => {
   if (!mainWindow) return;
   switch (action) {
@@ -677,117 +439,81 @@ ipcMain.on('window:action', (_e, action) => {
   }
 });
 
-ipcMain.handle('app:getStatus', async () => {
-  const enginePort = BRIDGE_PORT;
-  const [health, probe, opencodeRoot] = await Promise.allSettled([
-    httpGetJson(enginePort, '/health', 2500),
-    httpGetJson(enginePort, '/v1/probe', 4000),
-    httpGetRaw(SERVE_PORT, '/', 2500),
-  ]);
-  const bridgeOk = health.status === 'fulfilled' && health.value.status === 200;
-  const opencodeOk = opencodeRoot.status === 'fulfilled' && opencodeRoot.value.status === 200;
-  const sites = probe.status === 'fulfilled' && probe.value.json?.sites ? probe.value.json.sites : [];
-  const chatgptOk = sites.some((s) => s.site === 'chatgpt' && !s.login_required && s.ok);
-  const geminiOk = sites.some((s) => s.site === 'gemini' && !s.login_required && s.ok);
-  return {
-    bridgeOk,
-    opencodeOk,
-    startupFailed,
-    chatgptOk,
-    geminiOk,
-    chromeReady: chromeProc != null,
-    projectDir,
-    appVersion: app.getVersion(),
-    webchatUrl: `http://127.0.0.1:${SERVE_PORT}/`,
-    updateState,
-    updateVersion: app.getVersion(),
-    messageCount: readArchiveCounter(projectDir),
-  };
-});
+ipcMain.handle('app:getBoot', () => ({
+  projectDir: projectDir || null,
+  appVersion: app.getVersion(),
+}));
 
-ipcMain.handle('project:pick', async () => {
+ipcMain.handle('app:pickProject', async () => {
   const picked = await pickProjectFolder();
   if (!picked) return null;
   projectDir = picked;
   writeSettings({ ...readSettings(), projectDir });
-  spawnBridge(projectDir);
+  appendLog('boot', `[boot] projectDir selected: ${picked}\n`);
+  await startServices(projectDir);
   return picked;
 });
 
-ipcMain.handle('bridge:restart', async () => {
-  if (!projectDir) return false;
-  spawnBridge(projectDir);
-  return true;
+function ocFetchJson(pathname, init) {
+  return new Promise((resolve) => {
+    const method = (init && init.method) || 'GET';
+    const data = init && init.body != null ? JSON.stringify(init.body) : undefined;
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: SERVE_PORT,
+        path: pathname,
+        method,
+        timeout: 30000,
+        headers: {
+          Authorization:
+            'Basic ' + Buffer.from(`opencode:${servePassword}`).toString('base64'),
+          ...(data
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+            : {}),
+        },
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (d) => (raw += d));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, json: JSON.parse(raw) }); }
+          catch { resolve({ status: res.statusCode, json: null, body: raw.slice(0, 4096) }); }
+        });
+      },
+    );
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, json: null, error: 'timeout' }); });
+    req.on('error', (e) => resolve({ status: 0, json: null, error: String(e) }));
+    if (data) req.end(data); else req.end();
+  });
+}
+
+ipcMain.handle('oc:fetch', (_e, pathname, init) => ocFetchJson(pathname, init));
+
+ipcMain.handle('bridge:fetch', (_e, pathname, init) => httpGetJson(BRIDGE_PORT, pathname));
+
+function probeBridge() {
+  return httpGetJson(BRIDGE_PORT, '/v1/probe', 4000).then((r) => r.json);
+}
+ipcMain.handle('app:probe', async () => {
+  const r = await httpGetJson(BRIDGE_PORT, '/v1/probe', 4000).catch(() => null);
+  return r && r.json
+    ? r.json
+    : {
+        ok: false,
+        chrome_running: false,
+        chrome_not_running: true,
+        login_required: false,
+        sites: [],
+      };
 });
 
-ipcMain.handle('chrome:reopen', async () => {
-  await reopenChromeAndWait();
-  return true;
-});
-
-// 로그인 필요 배너용: 전용 Chrome을 죽이지 않고 (필요하면) 살려서 앞에 띄운다
-ipcMain.handle('chrome:launch', async () => {
-  try {
-    const r = await httpGetRaw(CDP_PORT, '/json/version', 1500);
-    if (r.status === 200) return { launched: false, alreadyRunning: true };
-  } catch {}
-  spawnChrome();
-  return { launched: true, alreadyRunning: false };
-});
-
-ipcMain.handle('handover:trigger', async () => {
-  try {
-    const r = await httpPostJson(BRIDGE_PORT, '/v1/handover/trigger', {}, 5000);
-    return r.json || { ok: false, message: `브릿지 응답 오류 (${r.status})` };
-  } catch (e) {
-    return { ok: false, message: `브릿지에 연결할 수 없습니다: ${e && e.message ? e.message : e}` };
-  }
-});
-
-ipcMain.handle('handover:events', async () => {
-  try {
-    const r = await httpGetJson(BRIDGE_PORT, '/v1/handover/events', 5000);
-    return r.json || { events: [] };
-  } catch (e) {
-    return { events: [], error: String(e && e.message ? e.message : e) };
-  }
-});
-
-ipcMain.on('spa:bootstrapSync', (e) => {
-  // spa-seed.cjs(프리로드)가 document-start에 SPA 첫 실행 설정을 시드하는 데 사용
-  e.returnValue = { projectDir: projectDir || '' };
-});
-
-ipcMain.handle('spa:bootstrap', () => {
-  return { projectDir: projectDir || '', appVersion: app.getVersion() };
-});
-
-ipcMain.handle('logs:tail', async () => tailLogsText());
-
-ipcMain.handle('updater:check', async () => {
-  if (!autoUpdater) return { ok: false, message: '업데이터가 초기화되지 않았습니다.' };
-  try {
-    const result = await autoUpdater.checkForUpdates();
-    const latest = result && result.updateInfo ? result.updateInfo.version : '?';
-    if (updateState === 'downloaded') return { ok: true, message: `새 버전(${latest})이 다운로드되었습니다. 재시작 시 설치됩니다.` };
-    if (updateState === 'available') return { ok: true, message: `새 버전(${latest}) 다운로드 중입니다.` };
-    return { ok: true, message: `최신 버전입니다 (v${app.getVersion()}).` };
-  } catch (e) {
-    return { ok: false, message: `업데이트 확인 실패: ${e && e.message ? e.message : e}` };
-  }
-});
-
+// ---------- 종료 처리 ----------
 process.on('uncaughtException', (e) => {
-  try {
-    ensureDir(LOG_DIR);
-    fs.appendFileSync(path.join(LOG_DIR, 'boot.log'), `[boot] uncaughtException: ${e && (e.stack || e.message) || e}\n`);
-  } catch {}
+  appendLog('boot', `[boot] uncaughtException: ${e && (e.stack || e.message) || e}\n`);
 });
 process.on('unhandledRejection', (e) => {
-  try {
-    ensureDir(LOG_DIR);
-    fs.appendFileSync(path.join(LOG_DIR, 'boot.log'), `[boot] unhandledRejection: ${e && (e.stack || e.message) || e}\n`);
-  } catch {}
+  appendLog('boot', `[boot] unhandledRejection: ${e && (e.stack || e.message) || e}\n`);
 });
 
 const gotLock = app.requestSingleInstanceLock();
@@ -797,54 +523,37 @@ if (!gotLock) {
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
-    } else {
-      bootUI();
     }
   });
 
   app.whenReady().then(async () => {
     try {
       appendLog('boot', '[boot] whenReady: start\n');
-      projectDir = '';
       ensureDir(DATA_DIR);
       ensureDir(LOG_DIR);
-      // iframe에 심어줄 SPA 시드 프리로드 (127.0.0.1:7891 origin에서만 동작)
-      try {
-        session.defaultSession.setPreloads([path.join(UI_DIR, 'spa-seed.cjs')]);
-        appendLog('boot', '[boot] spa-seed preload registered\n');
-      } catch (e) {
-        appendLog('boot', `[boot] spa-seed preload failed: ${e && e.message || e}\n`);
-      }
-      appendLog('boot', '[boot] dirs ensured\n');
+      projectDir = await resolveProjectDir();
       createWindow();
-      appendLog('boot', '[boot] window created\n');
       buildTray();
-      appendLog('boot', '[boot] tray built\n');
       setupAutoUpdate();
-      appendLog('boot', '[boot] auto-update setup done\n');
-      const started = await startServices();
-      appendLog('boot', `[boot] services started=${started}\n`);
-      if (started) {
-        bootUI();
+      appendLog('boot', `[boot] window created; projectDir=${projectDir || '(unset)'}\n`);
+      if (projectDir) {
+        startServices(projectDir);
       }
+      // 프로젝트 폴더가 없으면 렌더러가 화면에서 선택한다
     } catch (e) {
       appendLog('boot', `[boot] whenReady error: ${e && (e.stack || e.message) || e}\n`);
     }
   });
 
   app.on('window-all-closed', () => {
-    // 트레이 앱: 창이 닫혀도 백그라운드 유지 (Windows 관례는 다르므로, 창 닫힘 = 최소화 처리는 하지 않고 그대로 닫음)
-    if (process.platform !== 'darwin') {
-      // 사용자가 창을 닫아도 서비스는 유지한다. 완전 종료는 트레이의 "종료"로.
-    }
+    // 트레이 앱 — 창이 닫혀도 백그라운드 유지 (완전 종료는 트레이에서)
   });
 
   app.on('before-quit', () => {
     appQuitting = true;
-    if (probeTimer) clearInterval(probeTimer);
     killChild(bridgeProc);
     killChild(opencodeProc);
-    killChild(chromeProc);
   });
 }

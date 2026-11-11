@@ -1,21 +1,31 @@
 {
   "name": "codebridge-desktop",
-  "version": "0.3.0",
-  "description": "CodeBridge Desktop — 무료 웹 채팅을 모델로 쓰는 독립 코딩 에이전트 앱",
+  "version": "0.4.0",
+  "description": "CodeBridge Desktop — 무료 웹 채팅을 모델로 쓰는 독립 코딩 에이전트 앱 (opencode 백엔드 + 자체 프론트엔드)",
   "main": "main.cjs",
   "private": true,
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win --x64",
-    "dist:dir": "electron-builder --win --x64 --dir"
+    "build:frontend": "vite build",
+    "start": "npm run build:frontend && electron .",
+    "dist": "npm run build:frontend && electron-builder --win --x64",
+    "dist:dir": "npm run build:frontend && electron-builder --win --x64 --dir"
   },
   "dependencies": {
     "electron-updater": "^6.8.11"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "autoprefixer": "^10.4.21",
     "electron": "^37.2.6",
     "electron-builder": "^26.0.12",
-    "png-to-ico": "^3.0.1"
+    "lucide-react": "^0.544.0",
+    "png-to-ico": "^3.0.1",
+    "postcss": "^8.5.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "tailwindcss": "^3.4.18",
+    "vite": "^7.1.9"
   },
   "build": {
     "appId": "com.codebridge.desktop",
@@ -25,8 +35,8 @@
     },
     "files": [
       "main.cjs",
-      "renderer/**",
-      "ui/**",
+      "preload.cjs",
+      "ui-build/**",
       "package.json"
     ],
     "extraResources": [

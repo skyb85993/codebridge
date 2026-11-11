@@ -1,11 +1,17 @@
-# CodeBridge bridge 기본 설정 (Phase 0)
+# CodeBridge bridge 설정
 # [automation] mode:
-#   "mock"    = 고정 응답 스파이크 (브라우저 없이 전 파이프라인 검증)
-#   "browser" = 실제 웹 채팅 자동화 (Phase 1+ 구현)
+#   "browser"  = 전용 Chrome(CDP 9333)으로 실제 ChatGPT/Gemini 자동화 (전용 프로필에 로그인 1회 필요)
+#   mock 경로는 제거됨 (2026-11-11)
 
 [server]
 host = "127.0.0.1"
 port = 9224
 
 [automation]
-mode = "mock"
+mode = "browser"
+cdp_port = 9333
+
+[handover]
+mode = "auto"
+thread_soft_limit = 25
+order = ["same_site_new_chat", "gemini"]

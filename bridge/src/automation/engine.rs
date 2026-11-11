@@ -148,6 +148,46 @@ async fn eval_str(page: &Page, js: &str) -> Result<String, EngineError> {
     })
 }
 
+fn chrome_exe() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    ];
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        candidates.push(std::path::PathBuf::from(local).join(r"Google\Chrome\Application\chrome.exe"));
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn chrome_profile_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("CODEBRIDGE_CHROME_PROFILE") {
+        return std::path::PathBuf::from(dir);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return std::path::PathBuf::from(appdata).join("CodeBridge").join("chrome-profile");
+    }
+    std::path::PathBuf::from(".codebridge-chrome-profile")
+}
+
+/// 127.0.0.1:port/path 가 HTTP 200이면 true (CDP 생존 확인, 의존성 없이 raw TCP).
+/// 연결/쓰기/읽기 전부에 타임아웃을 건다 (멈춘 Chrome에 무한 대기하지 않도록).
+async fn http_ok(port: u16, path: &str) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let task = async move {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        stream.write_all(req.as_bytes()).await.ok()?;
+        let mut buf = Vec::with_capacity(4096);
+        stream.read_to_end(&mut buf).await.ok()?;
+        let head = String::from_utf8_lossy(&buf);
+        Some(head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200"))
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(4), task).await {
+        Ok(Some(v)) => v,
+        _ => false,
+    }
+}
+
 pub struct Engine {
     pub cdp_port: u16,
 }
@@ -168,7 +208,8 @@ impl Engine {
         Ok(browser)
     }
 
-    async fn find_tab(&self, browser: &Browser, site: Site) -> Result<Page, EngineError> {
+    /// 탭을 찾는다. allow_create=false이면 없을 때 None을 돌려준다 (probe처럼 읽기 전용인 경우).
+    async fn find_tab(&self, browser: &Browser, site: Site, allow_create: bool) -> Result<Option<Page>, EngineError> {
         // handler가 대상 목록을 받을 때까지 재시도
         let mut pages = browser.pages().await.unwrap_or_default();
         for _ in 0..12 {
@@ -188,24 +229,26 @@ impl Engine {
             if ok {
                 // 대화/앱 URL 우선 (gemini.google.com/app/..., chatgpt.com/c/...)
                 if site == Site::Gemini && u.contains("/app") {
-                    return Ok(p);
+                    return Ok(Some(p));
                 }
                 if site == Site::ChatGpt && u.contains("/c/") {
-                    return Ok(p);
+                    return Ok(Some(p));
                 }
                 fallback = Some(p);
             }
         }
         match fallback {
-            Some(p) => Ok(p),
-            None => browser
+            Some(p) => Ok(Some(p)),
+            None if allow_create => browser
                 .new_page(if site == Site::Gemini {
                     "https://gemini.google.com/app"
                 } else {
                     "https://chatgpt.com/"
                 })
                 .await
+                .map(Some)
                 .map_err(|e| EngineError::Page(e.to_string())),
+            None => Ok(None),
         }
     }
 
@@ -342,12 +385,19 @@ impl Engine {
         LIMIT_TEXTS.iter().any(|t| lower.contains(t))
     }
 
-    /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용)
+    /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용).
+    /// Chrome이 안 떠 있으면 탭을 만들지 않고 "chrome-not-running"을 돌려준다 (읽기 전용).
     pub async fn probe_site(&self, site: Site) -> Result<(bool, String, String), EngineError> {
         // probe는 읽기 전용이므로 전송 작업 잠금을 잡지 않는다 (생성 중 UI 폴링 지연 방지).
         let sel = site_selectors(site).composer_sel;
+        if !http_ok(self.cdp_port, "/json/version").await {
+            return Ok((false, String::new(), "chrome-not-running".to_string()));
+        }
         let browser = self.spawn_handler().await?;
-        let page = self.find_tab(&browser, site).await?;
+        let page = match self.find_tab(&browser, site, false).await? {
+            Some(p) => p,
+            None => return Ok((false, String::new(), "chrome-not-running".to_string())),
+        };
         let js = format!(
             r#"(() => JSON.stringify({{
                 composer: !!document.querySelector({sel}),
@@ -375,7 +425,10 @@ impl Engine {
         let _op_guard = site_op_lock().await;
         let sel = site_selectors(site);
         let browser = self.spawn_handler().await?;
-        let page = self.find_tab(&browser, site).await?;
+        let page = self
+            .find_tab(&browser, site, true)
+            .await?
+            .ok_or_else(|| EngineError::Page("새 채팅 탭을 찾거나 열지 못했습니다".into()))?;
         let r = eval_str(
             &page,
             &format!(
@@ -407,13 +460,51 @@ impl Engine {
         self.rotate_new_chat_site(Site::ChatGpt).await
     }
 
+    /// 전용 Chrome이 CDP에 응답하지 않으면 그때 띄운다 (지연 실행).
+    async fn ensure_chrome(&self, site: Site) -> Result<(), EngineError> {
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Ok(());
+        }
+        let exe = chrome_exe().ok_or_else(|| {
+            EngineError::Connect("Chrome 실행 파일을 찾지 못했습니다".into())
+        })?;
+        let profile = chrome_profile_dir();
+        let _ = std::fs::create_dir_all(&profile);
+        let url = match site {
+            Site::Gemini => "https://gemini.google.com/app",
+            Site::ChatGpt => "https://chatgpt.com/",
+        };
+        std::process::Command::new(&exe)
+            .args([
+                &format!("--remote-debugging-port={}", self.cdp_port),
+                &format!("--user-data-dir={}", profile.display()),
+                url,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| EngineError::Connect(format!("전용 Chrome 실행 실패: {e}")))?;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if http_ok(self.cdp_port, "/json/version").await {
+                return Ok(());
+            }
+        }
+        Err(EngineError::Connect("전용 Chrome이 뜨지 않았습니다 (20초 대기)".into()))
+    }
+
     /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.
     /// 프로세스 전역 잠금으로 같은 탭에 대한 동시 작업을 직렬화한다.
     pub async fn send_and_await_site(&self, prompt: &str, site: Site) -> Result<SendOutcome, EngineError> {
+        self.ensure_chrome(site).await?;
         let _op_guard = site_op_lock().await;
         let sel = site_selectors(site);
         let browser = self.spawn_handler().await?;
-        let page = self.find_tab(&browser, site).await?;
+        let page = self
+            .find_tab(&browser, site, true)
+            .await?
+            .ok_or_else(|| EngineError::Page("탭을 찾거나 열지 못했습니다".into()))?;
         if !self.wait_for_composer(&page, site, 45_000).await? {
             return Err(EngineError::Page(
                 "컴포저를 찾지 못했습니다 (로그인 상태를 확인하세요)".into(),
