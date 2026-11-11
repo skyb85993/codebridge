@@ -20,6 +20,14 @@ export type HostProbe = {
 };
 export type HostBoot = { projectDir: string | null; appVersion: string };
 export type HostMode = 'app:ready';
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloaded'
+  | 'up-to-date'
+  | 'error';
+export type HostUpdateState = { state: UpdateState; version: string | null; appVersion: string };
 
 declare global {
   interface Window {
@@ -32,6 +40,8 @@ declare global {
         init?: { method?: string; body?: unknown },
       ): Promise<{ status: number; json: unknown }>;
       windowAction(action: 'minimize' | 'toggle-maximize' | 'close'): void;
+      getUpdateState(): Promise<UpdateState>;
+      quitAndInstall(): Promise<void>;
     };
   }
 }

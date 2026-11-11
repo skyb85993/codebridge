@@ -3,8 +3,10 @@ import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
 import MessageList from './components/MessageList';
 import Composer from './components/Composer';
+import UpdateBanner from './components/UpdateBanner';
 import { api, ChatMessage, ModelID, SessionInfo } from './api';
 import type { HostProbe } from './ipc';
+import brandIcon from '../build/icon.png';
 
 const DEFAULT_MODEL: ModelID = 'webchat-chatgpt';
 const POLL_MS = 700;
@@ -204,19 +206,51 @@ export default function App() {
     return (
       <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
         <TitleBar version={version} title="CodeBridge" />
-        <div className="flex flex-1 items-center justify-center">
-          <div className="glass-strong glow-border flex w-[480px] flex-col items-center gap-5 rounded-2xl p-8 text-center fade-up">
-            <div className="text-grad text-3xl font-extrabold tracking-tight">CodeBridge</div>
-            <p className="text-[13px] leading-relaxed text-dim">
-              작업할 프로젝트 폴더를 선택하세요.<br />
-              생성되는 코드는 이 폴더에 직접 작성됩니다.
+        <div className="pointer-events-none absolute -left-40 top-1/4 h-96 w-96 rounded-full bg-cyan-400/10 blur-3xl" />
+        <div className="pointer-events-none absolute -right-40 bottom-1/4 h-96 w-96 rounded-full bg-emerald-400/10 blur-3xl" />
+        <div className="relative flex flex-1 items-center justify-center">
+          <div className="glass-strong flex w-[560px] flex-col items-center gap-6 rounded-3xl border border-cyan-400/15 p-10 text-center shadow-card fade-up">
+            {/* 로고 글로우 */}
+            <div className="relative">
+              <div className="absolute inset-0 -m-6 rounded-full bg-gradient-to-br from-cyan-400/30 via-emerald-400/20 to-transparent blur-2xl" />
+              <img src={brandIcon} alt="CodeBridge" className="relative h-24 w-24 rounded-2xl" />
+            </div>
+
+            <div className="flex flex-col items-center gap-1.5">
+              <div className="text-grad text-4xl font-extrabold tracking-tight">CodeBridge</div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-dim">Free Web Chat → Code</p>
+            </div>
+            <p className="text-[13.5px] leading-relaxed text-dim">
+              무료 웹 채팅(ChatGPT / Gemini)을 코딩 에이전트로 사용합니다.<br />
+              코드는 이 폴더에 <span className="text-cyan-300">바로 작성</span>되고, 첫 실행도 추가 설정이 없습니다.
             </p>
+
+            {/* 3단계 안내 */}
+            <div className="grid w-full grid-cols-3 gap-3">
+              {[
+                { n: '1', t: '폴더 연결', d: '프로젝트 폴더를 한 번만 선택' },
+                { n: '2', t: '자동 실행', d: '전용 Chrome은 첫 요청 때 실행' },
+                { n: '3', t: '바로 작성', d: '생성된 파일은 폴더에 즉시 반영' },
+              ].map((s) => (
+                <div key={s.n} className="flex flex-col items-center gap-1.5 rounded-2xl border border-lineSoft bg-panel2/60 px-3 py-3.5">
+                  <span className="grid h-6 w-6 place-items-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[11px] font-bold text-cyan-300">
+                    {s.n}
+                  </span>
+                  <span className="text-[12px] font-bold text-text">{s.t}</span>
+                  <span className="text-[10px] leading-snug text-dim">{s.d}</span>
+                </div>
+              ))}
+            </div>
+
             <button
               onClick={pickProject}
-              className="rounded-xl bg-accent-grad px-6 py-2.5 text-[13px] font-bold text-[#06202b] transition-shadow hover:shadow-glow"
+              className="group relative mt-1 flex items-center gap-2 rounded-2xl bg-accent-grad px-8 py-3 text-[14px] font-extrabold text-[#06202b] transition-all hover:shadow-[0_0_28px_rgba(88,214,255,0.45)]"
             >
               프로젝트 폴더 선택…
             </button>
+            <p className="text-[10px] text-dim">
+              처음 실행 시 SmartScreen 경고가 뜰 수 있습니다 (서명 없는 무료 배포) — "추가 정보 → 실행"
+            </p>
           </div>
         </div>
       </div>
@@ -226,6 +260,7 @@ export default function App() {
   return (
     <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
       <TitleBar version={version} title={activeSession?.title ?? '새 대화'} />
+      <UpdateBanner />
       <div className="flex min-h-0 flex-1">
         {sidebarOpen && (
           <Sidebar

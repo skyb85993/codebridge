@@ -10,6 +10,10 @@ node_modules
 /desktop/dist
 /desktop/dist/
 /desktop/build/*.ico
+!/desktop/build/installer.ico
+!/desktop/build/uninstaller.ico
+!/desktop/build/installer-header.bmp
+!/desktop/build/installer-sidebar.bmp
 /.chrome-profile/
 /desktop/resources/bridge/*.exe
 /desktop/resources/opencode/*.exe

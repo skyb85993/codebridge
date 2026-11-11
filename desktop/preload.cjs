@@ -20,4 +20,10 @@ contextBridge.exposeInMainWorld('codebridge', {
   windowAction(action) {
     ipcRenderer.send('window:action', action);
   },
+  getUpdateState() {
+    return ipcRenderer.invoke('app:getUpdateState');
+  },
+  quitAndInstall() {
+    return ipcRenderer.invoke('updater:quitAndInstall');
+  },
 });

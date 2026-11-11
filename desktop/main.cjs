@@ -53,6 +53,7 @@ let servePassword = '';
 let projectDir = '';
 let appQuitting = false;
 let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
+let updateVersion = null; // 사용 가능한 최신 버전 (예: "0.4.1")
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
@@ -292,28 +293,23 @@ function setupAutoUpdate() {
 
     autoUpdater.on('update-available', (info) => {
       updateState = 'available';
+      updateVersion = info && info.version ? String(info.version) : null;
       if (tray) tray.setToolTip(`CodeBridge — 업데이트 ${info.version} 다운로드 중`);
       appendLog('updater', `[updater] update-available v${info.version}\n`);
     });
     autoUpdater.on('update-not-available', () => {
       updateState = 'up-to-date';
+      updateVersion = null;
       if (tray) tray.setToolTip('CodeBridge Desktop');
+    });
+    autoUpdater.on('download-progress', () => {
+      updateState = 'available';
     });
     autoUpdater.on('update-downloaded', (info) => {
       updateState = 'downloaded';
+      updateVersion = info && info.version ? String(info.version) : updateVersion;
       if (tray) tray.setToolTip('CodeBridge — 재시작하면 업데이트가 적용됩니다');
       appendLog('updater', `[updater] update-downloaded v${info.version}\n`);
-      if (mainWindow) {
-        const r = dialog.showMessageBoxSync(mainWindow, {
-          type: 'info',
-          buttons: ['지금 재시작', '나중에'],
-          defaultId: 0,
-          cancelId: 1,
-          title: 'CodeBridge 업데이트',
-          message: `새 버전(${info.version})이 준비되었습니다. 지금 재시작해서 적용할까요?`,
-        });
-        if (r === 0) autoUpdater.quitAndInstall();
-      }
     });
     autoUpdater.on('error', (err) => {
       updateState = 'error';
@@ -443,6 +439,21 @@ ipcMain.handle('app:getBoot', () => ({
   projectDir: projectDir || null,
   appVersion: app.getVersion(),
 }));
+
+ipcMain.handle('app:getUpdateState', () => ({
+  state: updateState,
+  version: updateVersion,
+  appVersion: app.getVersion(),
+}));
+
+ipcMain.handle('updater:quitAndInstall', () => {
+  if (updateState !== 'downloaded') {
+    return { ok: false, message: '다운로드가 아직 완료되지 않았습니다.' };
+  }
+  appendLog('updater', '[updater] quitAndInstall (from banner)\n');
+  autoUpdater.quitAndInstall();
+  return { ok: true };
+});
 
 ipcMain.handle('app:pickProject', async () => {
   const picked = await pickProjectFolder();
