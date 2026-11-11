@@ -76,8 +76,12 @@ async function refreshHandover() {
     const events = (r && Array.isArray(r.events)) ? r.events : [];
     if (!events.length) {
       list.textContent = '최근 인계 기록이 없습니다.';
-      status.textContent = '현재 스레드에 인계 기록이 없습니다.';
-      status.className = 'handover-status muted';
+      const t = status.textContent.trim();
+      const isDefault = t === '' || t === '현재 스레드에 인계 기록이 없습니다.' || t === '불러오는 중…' || t === '상태를 확인하는 중…';
+      if (isDefault) {
+        status.textContent = '현재 스레드에 인계 기록이 없습니다.';
+        status.className = 'handover-status muted';
+      }
       return;
     }
     status.textContent = `최근 인계 ${events.length}건`;
@@ -115,7 +119,7 @@ function wireHandover() {
     } finally {
       btn.disabled = false;
     }
-    setTimeout(refreshHandover, 800);
+    // 트리거 결과 메시지를 지우지 않도록 자동 새로고침은 하지 않는다 (뷰 재진입 시 갱신됨)
   });
 }
 

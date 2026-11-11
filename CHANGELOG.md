@@ -17,6 +17,16 @@
 - iframe 임베드 실사용 E2E 검증 완료: 새 세션 → ChatGPT (web) → 로블록스 Lua 파일이 실제로 작성됨 (스크래치 폴더)
 - 발견: webchat 모델이 "모델 관리"에서 기본 OFF → 첫 실행 시 표시되지 않음 (활성화 방법 문서화)
 
+## v0.3.0 (2026-11-11)
+
+CI/CD + 인수인계 UX + 회귀 자동화 릴리스.
+
+- **CI/CD**: `master` push/PR → 빌드 체크(`ci.yml`: cargo test + 문법 검사 + testpages 계약 검사), 태그 `v*` push → `release.yml`이 자동 빌드→GitHub Release 생성 (릴리스 노트는 CHANGELOG에서 추출, `WIN_CSC_LINK` 시크릿이 있으면 자동 서명)
+- **인수인계 이력 뷰** (사이드바 "인수인계"): 최근 인계 이벤트 JSONL 기록·표시 (대화 본문 아님), "지금 인수인계" 수동 트리거 버튼 (`POST /v1/handover/trigger` → 다음 browser-mode 요청이 인계 체인 실행)
+- **로그인 필요 배너**: 상태바에 경고 + 원클릭 "전용 Chrome 열기" (kill 없이 재사용/실행)
+- **testpages 회귀 자동화** (`scripts/testpages-check.mjs`): 엔진 선택자 계약을 반영한 가짜 ChatGPT DOM으로 HEADLESS Chrome + CDP 검증, **7/7 통과** (CI에도 포함)
+- 아카이브 게이팅, handover 이벤트 로그 상한(64KB/128줄), README/릴리스 문서 갱신
+
 ## v0.2.1 (2026-11-11)
 
 CodeRabbit 검사 수정 릴리스 (19건 전부 Major).
