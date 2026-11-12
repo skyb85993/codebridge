@@ -5,7 +5,7 @@
 
 > 상세 계획 문서는 워크스페이스 밖(`.opencode/plan`)에 있다. 저장소에는 코드만 포함한다.
 
-## 현재 상태 (v0.4.9)
+## 현재 상태 (v0.5.0)
 
 - [x] 브릿지(browser 모드): 실 ChatGPT/Gemini 자동화 — flatten, CDP 전송/감지/추출, 관대 파서, 아카이브, 한도 감지, 인수인계 체인
 - [x] 관대 파서: 코드펜스+경로 주석 → write tool_calls 승격 (유닛 테스트 22개 포함)
@@ -29,7 +29,7 @@ cd codebridge\bridge
 cargo run
 ```
 
-## CodeBridge Desktop (v0.4.9 — 독립 앱)
+## CodeBridge Desktop (v0.5.0 — 독립 앱)
 
 `desktop/`는 **Electron + React + Vite + Tailwind**로 만든 독립 설치파일 앱입니다. 앱은 opencode serve(v2 API)를 자식 프로세스로 실행하고, opencode 웹 UI 대신 **자체 프레임리스 셸 UI**를 화면에 표시합니다. 전용 Chrome(CDP 9333)은 **지연 실행** — 앱 첫 요청 때 브릿지가 전용 프로필 Chrome을 띄웁니다. 기본 모드는 **browser(실 ChatGPT/Gemini 자동화)**.
 

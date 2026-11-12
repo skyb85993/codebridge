@@ -178,6 +178,22 @@ export default function App() {
     [],
   );
 
+  const answerQuestion = useCallback(
+    async (text: string) => {
+      // 질문 카드 선택지는 사용자 메시지로 전송 (루프를 계속 돌리기 위해 busy를 올려둔다)
+      await send(text);
+    },
+    [send],
+  );
+
+  const runApprovedShell = useCallback(async (command: string): Promise<string> => {
+    const res = await window.codebridge.runApprovedShell(command);
+    if (!res.ok) {
+      return res.error ?? '실행 실패';
+    }
+    return res.output ?? '';
+  }, []);
+
   const interrupt = useCallback(async () => {
     if (!activeId) return;
     try {
@@ -280,7 +296,12 @@ export default function App() {
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">
-          <MessageList messages={messages} busy={busy} />
+          <MessageList
+            messages={messages}
+            busy={busy}
+            onAnswer={answerQuestion}
+            onRunApprovedShell={runApprovedShell}
+          />
           <Composer
             onSend={send}
             onInterrupt={interrupt}

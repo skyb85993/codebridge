@@ -41,6 +41,7 @@ declare global {
       ): Promise<{ status: number; json: unknown }>;
       windowAction(action: 'minimize' | 'toggle-maximize' | 'close'): void;
       showChrome(): Promise<{ ok: boolean; action?: string; pid?: number; error?: string }>;
+      runApprovedShell(command: string): Promise<{ ok: boolean; output?: string; error?: string }>;
       getUpdateState(): Promise<UpdateState>;
       quitAndInstall(): Promise<void>;
     };

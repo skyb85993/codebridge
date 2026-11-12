@@ -26,8 +26,8 @@
   },
   "permission": {
     "edit": "allow",
-    "shell": "deny",
-    "webfetch": "deny",
+    "shell": "allow",
+    "webfetch": "allow",
     "execute": "deny"
   }
 }

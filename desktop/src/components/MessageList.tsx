@@ -5,9 +5,11 @@ import MessageRow from './MessageRow';
 interface MessageListProps {
   messages: ChatMessage[];
   busy: boolean;
+  onAnswer?: (text: string) => void;
+  onRunApprovedShell?: (command: string) => Promise<string>;
 }
 
-export default function MessageList({ messages, busy }: MessageListProps) {
+export default function MessageList({ messages, busy, onAnswer, onRunApprovedShell }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
@@ -38,14 +40,14 @@ export default function MessageList({ messages, busy }: MessageListProps) {
           <div className="mt-16 flex flex-col items-center gap-4 text-center fade-up">
             <div className="text-grad text-4xl font-extrabold tracking-tight">무엇을 만들까요?</div>
             <p className="max-w-md text-[13px] leading-relaxed text-dim">
-              로블록스 게임 코드를 자유 형식으로 요청하세요.<br />
-              웹 채팅(무료)을 모델로 사용하며, 파일은 이 프로젝트 폴더에 바로 작성됩니다.
+              자유 형식으로 요청하세요.<br />
+              웹 채팅을 모델로 쓰며, 파일은 이 프로젝트 폴더에 바로 작성됩니다.
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               {[
-                '로블록스 점프 게임 스켈레톤 만들어줘',
+                'TODO 하나 찾아서 고쳐줘',
                 '이 프로젝트 구조 설명해줘',
-                '지금까지 만든 코드에서 TODO 하나 골라 고쳐줘',
+                '버그 고치고 테스트해줘',
               ].map((q) => (
                 <PromptChip key={q} text={q} />
               ))}
@@ -53,7 +55,7 @@ export default function MessageList({ messages, busy }: MessageListProps) {
           </div>
         )}
         {visible.map((m) => (
-          <MessageRow key={m.id} message={m} />
+          <MessageRow key={m.id} message={m} onAnswer={onAnswer} onRunApprovedShell={onRunApprovedShell} />
         ))}
         {busy && visible.length > 0 && !isLastAssistantDone(visible) && (
           <div className="flex items-center gap-2 pl-1 text-[11.5px] text-dim">

@@ -538,6 +538,32 @@ ipcMain.handle('app:showChrome', async () => {
   }
 });
 
+// 사용자가 "위험한 명령 확인 카드"에서 승인한 셸 명령을 앱이 직접 실행한다.
+// 브릿지/웹챗을 다시 부르지 않고 PowerShell에서 실행하고 결과를 돌려준다.
+ipcMain.handle('app:runApprovedShell', async (_e, command) => {
+  if (typeof command !== 'string' || !command.trim()) {
+    return { ok: false, error: 'command가 비어 있습니다' };
+  }
+  try {
+    const cwd = (projectDir && fs.existsSync(projectDir)) ? projectDir : process.cwd();
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 120000,
+      maxBuffer: 1 * 1024 * 1024,
+      windowsHide: true,
+    });
+    const out = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    appendLog('shell', `[shell] approved cmd=${command.slice(0,120)}\n${out.slice(0,2000)}\n`);
+    if (result.error) {
+      return { ok: false, error: String(result.error) };
+    }
+    return { ok: true, output: out.slice(0, 4000) || '(출력이 없습니다)' };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.on('window:action', (_e, action) => {
   if (!mainWindow) return;
   switch (action) {

@@ -55,7 +55,7 @@ mod tests {
         assert!(p.contains("미니 게임 만들어줘"));
         assert!(p.contains("GameManager.lua"));
         assert!(p.contains("write가 성공했습니다"));
-        assert!(p.contains("파일 출력 규약"));
+        assert!(p.contains("에이전트"));
         assert!(p.contains("MyGame"));
     }
 }

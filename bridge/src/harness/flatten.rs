@@ -10,7 +10,7 @@ use crate::api::{ChatMessage, ChatRequest};
 use serde_json::Value;
 
 const FENCE_HEADER: &str = include_str!("../../../prompts/fence_convention.md");
-const DEFAULT_BUDGET_CHARS: usize = 12_000;
+const DEFAULT_BUDGET_CHARS: usize = 32_000;
 const MAX_SNAPSHOT_FILES: usize = 80;
 const MAX_FILE_DEPTH: usize = 3;
 
@@ -91,86 +91,101 @@ fn msg_text(m: &ChatMessage) -> String {
 /// 규약+현재 요청 자체가 예산을 넘으면 Err로 명시적으로 거부한다.
 pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usize>) -> Result<String, String> {
     let budget = budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS);
-    let header = format!("[파일 규약 헤더]\n{}", FENCE_HEADER.trim());
-    let answer = "[답변 요청]\n위 규약에 따라 답변해 주세요.";
-    let latest_user = req
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(msg_text)
-        .unwrap_or_default();
-    let user_sec = format!("[이번 사용자 요청]\n{latest_user}");
+    let header = format!("{}\n", FENCE_HEADER.trim());
 
-    let fixed_len = header.chars().count() + user_sec.chars().count() + answer.chars().count() + 8;
-    if fixed_len > budget {
-        return Err(format!(
-            "사용자 요청이 너무 깁니다 ({fixed_len}자 > 예산 {budget}자). 요청을 나누어 보내 주세요."
-        ));
-    }
-
-    let remaining = budget - fixed_len;
-
-    // 도구 결과를 오래된 것부터 남은 예산에 맞게 접기
-    let tool_results: Vec<String> = req
-        .messages
-        .iter()
-        .filter(|m| m.role == "tool")
-        .map(msg_text)
-        .collect();
-    let mut kept: Vec<String> = Vec::new();
-    let mut used = 0usize;
-    for (i, tr) in tool_results.iter().enumerate().rev() {
-        let cost = tr.chars().count() + 24;
-        if used + cost > remaining {
-            kept.push(format!("(…오래된 도구 결과 {}건은 예산 초과로 생략)", i + 1));
+    // 새 구조: 헤더(규약) → 대화 기록(user/assistant/tool) → 워크스페이스 → 마지막 지시
+    // 모델이 직전에 어떤 도구를 호출했는지, 결과가 뭐였는지 인지한 채로 다음 행동을 고르게 한다.
+    let mut convo = String::new();
+    for m in &req.messages {
+        match m.role.as_str() {
+            "user" => {
+                let txt = msg_text(m);
+                convo.push_str("사용자: ");
+                convo.push_str(txt.trim());
+                convo.push('\n');
+            }
+            "assistant" => {
+                // 이 assistant 턴의 텍스트
+                let txt = msg_text(m);
+                let t = txt.trim();
+                if !t.is_empty() {
+                    convo.push_str("당신: ");
+                    convo.push_str(t);
+                    convo.push('\n');
+                }
+                // 이 assistant 턴의 도구 호출을 KV 형식으로 다시 쓰기
+                if let Some(tcs) = &m.tool_calls {
+                    if let Some(a) = tcs.as_array() {
+                        for tc in a {
+                            if let Some(call_line) = tool_call_line(tc) {
+                                convo.push_str(&call_line);
+                                convo.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+            "tool" => {
+                let txt = msg_text(m);
+                let t = txt.trim();
+                convo.push_str("도구:\n");
+                if t.chars().count() > 6_000 {
+                    let mut s: String = t.chars().take(6_000).collect();
+                    s.push_str("\n…(생략)\n");
+                    convo.push_str(&s);
+                } else {
+                    convo.push_str(t);
+                }
+                convo.push('\n');
+            }
+            _ => {}
+        }
+        if convo.chars().count() > budget {
             break;
         }
-        used += cost;
-        kept.push(format!("[도구 결과 #{}]\n{}", i + 1, tr));
     }
-    kept.reverse();
 
-    // 스냅샷: 남은 공간에 맞게 행 단위로 자른다 (잘랐으면 표시)
-    let snap_full = snapshot(workspace_root);
-    let snap_room = remaining.saturating_sub(used);
-    let snapshot = truncate_snapshot(&snap_full, snap_room);
+    // 워크스페이스 파일 목록은 작게 유지 — 가장 중요한 건 대화 기록
+    let snapshot = snapshot(workspace_root);
+    let mut prompt = String::new();
+    prompt.push_str(&header);
+    prompt.push_str("\n## 대화 기록\n");
+    prompt.push_str(convo.trim_end());
+    prompt.push_str("\n\n[현재 워크스페이스 파일]\n");
+    prompt.push_str(snapshot.trim_end());
+    prompt.push_str("\n\n## 당신의 차례입니다\n위 대화를 이어받아 TOOL 한 줄만 출력하세요. 설명 없이, 인사 없이.\n");
 
-    let mut sections: Vec<String> = Vec::new();
-    sections.push(header);
-    sections.push(user_sec);
-    if !kept.is_empty() {
-        sections.push(kept.join("\n\n"));
+    if let Ok(out) = std::env::var("BRIDGE_DEBUG_PROMPT") {
+        let _ = std::fs::write(&out, &prompt);
     }
-    if !snapshot.trim().is_empty() {
-        sections.push(format!("[현재 워크스페이스 파일]\n{snapshot}"));
-    }
-    sections.push(answer.to_string());
-
-    Ok(sections.join("\n\n"))
+    Ok(prompt)
 }
 
-fn truncate_snapshot(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
+/// 도구 호출 JSON을 `TOOL name key=value ...` 한 줄로 다시 쓰는 헬퍼.
+/// opencode가 보낸 arguments는 JSON 문자열이라 파싱해서 KV 형식으로 변환해 준다.
+fn tool_call_line(tc: &Value) -> Option<String> {
+    let f = tc.get("function")?;
+    let name = f.get("name")?.as_str()?;
+    let args_str = f.get("arguments")?.as_str()?;
+    let args: Value = serde_json::from_str(args_str).ok()?;
+    let obj = args.as_object()?;
+    let mut parts = vec![format!("TOOL {name}")];
+    for (k, v) in obj {
+        // 값에 공백이 있으면 항상 따옴표로 감싸 준다
+        let val = match v {
+            Value::String(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                if escaped.contains(char::is_whitespace) {
+                    format!("\"{escaped}\"")
+                } else {
+                    escaped
+                }
+            }
+            other => other.to_string(),
+        };
+        parts.push(format!("{k}={val}"));
     }
-    let mut out = String::new();
-    let mut used = 0usize;
-    for line in s.lines() {
-        let cost = line.chars().count() + 1;
-        if used + cost > max_chars {
-            break;
-        }
-        out.push_str(line);
-        out.push('\n');
-        used += cost;
-    }
-    if out.is_empty() {
-        out.push_str("(…워크스페이스 스냅샷은 예산 초과로 생략)\n");
-    } else {
-        out.push_str("(…스냅샷이 예산에 맞게 일부만 포함됨)\n");
-    }
-    out
+    Some(parts.join(" "))
 }
 
 /// 관대 파서에 넘기기 전, 웹 답변에서 코드펜스 잘림 여부를 미리 감지한다 (Phase 2).
@@ -202,10 +217,12 @@ mod tests {
             ChatMessage {
                 role: "user".into(),
                 content: Some(serde_json::json!("첫 번째 요청")),
+                tool_calls: None,
             },
             ChatMessage {
                 role: "user".into(),
                 content: Some(serde_json::json!("중요한 작업: 게임 만들어줘")),
+                tool_calls: None,
             },
         ];
         let req = ChatRequest {
@@ -220,28 +237,48 @@ mod tests {
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
         let prompt = build(&req, &dir, Some(20_000)).unwrap();
         assert!(prompt.contains("중요한 작업"));
-        assert!(prompt.contains("파일 출력 규약"));
+        assert!(prompt.contains("에이전트"));
         assert!(prompt.contains("main.rs"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn oversized_request_rejected_explicitly() {
-        let big = "가".repeat(5000);
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: Some(serde_json::json!(big)),
-        }];
+    fn build_produces_header_record_and_tail() {
+        let msgs = vec![
+            ChatMessage {
+                role: "user".into(),
+                content: Some(serde_json::json!("중요한 작업: 만들기")),
+                tool_calls: None,
+            },
+            ChatMessage {
+                role: "assistant".into(),
+                content: Some(serde_json::json!("TOOL read path=src/main.rs")),
+                tool_calls: None,
+            },
+            ChatMessage {
+                role: "tool".into(),
+                content: Some(serde_json::json!("fn main() {}")),
+                tool_calls: None,
+            },
+        ];
         let req = ChatRequest {
             model: "mock".into(),
             messages: msgs,
             stream: false,
             tools: None,
         };
-        let result = build(&req, std::path::Path::new("."), Some(200));
-        assert!(result.is_err(), "oversized request must be rejected explicitly");
-        let err = result.unwrap_err();
-        assert!(err.contains("요청이 너무 깁니다"));
+        let dir = std::env::temp_dir().join(format!("cb_flat_{}", std::process::id()));
+        let out_dir = dir.join("src");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
+        let prompt = build(&req, &dir, Some(20_000)).unwrap();
+        assert!(prompt.contains("에이전트"));
+        assert!(prompt.contains("## 대화 기록"));
+        assert!(prompt.contains("사용자:"));
+        assert!(prompt.contains("TOOL read path=src/main.rs"));
+        assert!(prompt.contains("도구:"));
+        assert!(prompt.contains("당신의 차례입니다"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -253,6 +290,7 @@ mod tests {
                 { "type": "image_url", "image_url": { "url": "https://example.invalid/x.png" } },
                 { "type": "text", "text": "둘째 줄" }
             ])),
+            tool_calls: None,
         }];
         let req = ChatRequest {
             model: "mock".into(),

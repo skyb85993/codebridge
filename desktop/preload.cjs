@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('codebridge', {
   showChrome() {
     return ipcRenderer.invoke('app:showChrome');
   },
+  runApprovedShell(command) {
+    return ipcRenderer.invoke('app:runApprovedShell', command);
+  },
   windowAction(action) {
     ipcRenderer.send('window:action', action);
   },

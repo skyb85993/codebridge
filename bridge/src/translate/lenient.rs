@@ -285,9 +285,446 @@ pub fn to_tool_calls(files: &[ParsedFile]) -> (Vec<Value>, Vec<String>) {
     (calls, issues)
 }
 
+// ---------------------------------------------------------------------------
+// TOOL 라인 파싱 (Phase 2~3): raw innerText에는 펜스 마커가 사라지므로
+// "TOOL 이름 {JSON}" 한 줄(또는 TOOL 블록)을 인식해 opencode의 tool_calls로 승격한다.
+//
+// 형식:
+//   TOOL read {"path": "src/GameManager.lua"}
+//   또는 TOOL read
+//   {"path": "src/GameManager.lua"}
+//   END_TOOL
+//
+// 안전:
+//   - 경로 계열인자는 모두 sanitize_path 샌드박스를 거친다
+//   - 파괴적 bash 명령은 자동 실행 대신 CODEBRIDGE_QUESTION 마커로 변환 (사용자 확인)
+// ---------------------------------------------------------------------------
+
+const TOOL_NAME: &[&str] = &["read", "glob", "grep", "edit", "shell", "question"];
+const TOOL_END_LINE: &str = "END_TOOL";
+
+/// 파싱 결과: opencode로 보낼 tool_calls + 사용자에게 보여줄 마커 라인들.
+#[derive(Debug, Default)]
+pub struct ToolPromotion {
+    /// opencode tool_calls (write promotion은 여기 포함되지 않음 — 별도 처리).
+    pub calls: Vec<Value>,
+    /// `question` 블록 또는 위험한 `shell`에서 자동 승격된 confirm/question 마커.
+    pub question_lines: Vec<String>,
+    /// 파이프라인 진단용 이슈들 (사용자 노출 아님).
+    pub issues: Vec<String>,
+}
+
+enum ToolBlock {
+    Call(Value),
+    QuestionMarker(String),
+    Skip(String),
+}
+
+/// raw innerText에서 TOOL 라인을 찾아 tool_calls로 승격한다.
+pub fn extract_tool_calls(raw: &str) -> ToolPromotion {
+    let mut out = ToolPromotion::default();
+    let mut call_idx = 1usize;
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        if !t.starts_with("TOOL ") {
+            i += 1;
+            continue;
+        }
+        let rest = &t["TOOL ".len()..];
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let inline = parts.next().map(str::trim).unwrap_or("");
+
+        // 본문: 같은 줄에 있으면 inline, 아니면 END_TOOL 까지 모은다.
+        let body = if !inline.is_empty() {
+            inline.to_string()
+        } else {
+            if !TOOL_NAME.contains(&name.as_str()) {
+                i += 1;
+                continue;
+            }
+            let mut body = String::new();
+            i += 1;
+            while i < lines.len() {
+                let l = lines[i];
+                if l.trim() == TOOL_END_LINE {
+                    i += 1;
+                    break;
+                }
+                body.push_str(l);
+                body.push('\n');
+                i += 1;
+            }
+            body.trim().to_string()
+        };
+
+        match classify_tool_call(&name, &body, &mut call_idx) {
+            ToolBlock::Call(v) => out.calls.push(v),
+            ToolBlock::QuestionMarker(line) => out.question_lines.push(line),
+            ToolBlock::Skip(reason) => out.issues.push(format!("{name}: {reason}")),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// TOOL 블록 본문(JSON)을 파싱하고, 이름과 맞춰 opencode call을 만든다.
+fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock {
+    let v: Value = match parse_tool_body(body) {
+        Ok(v) => v,
+        Err(e) => return ToolBlock::Skip(format!("본문 파싱 실패: {e}")),
+    };
+    if !v.is_object() {
+        return ToolBlock::Skip("JSON object 필요".into());
+    }
+
+    match name {
+        "read" => {
+            let p = arg_str_any(&v, &["path", "file", "filepath", "filename", "src", "directory"]).as_deref().map(sanitize_path).flatten();
+            let Some(path) = p else {
+                return ToolBlock::Skip("path 없음 또는 거부".into());
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("path".into(), Value::String(path));
+            if let Some(off) = arg_num(&v, "offset") {
+                args.insert("offset".into(), Value::from(off));
+            }
+            if let Some(lim) = arg_num(&v, "limit") {
+                args.insert("limit".into(), Value::from(lim));
+            }
+            ToolBlock::Call(make_call(call_idx, "read", Value::Object(args)))
+        }
+        "glob" => {
+            let Some(pattern) = arg_str_any(&v, &["pattern", "glob", "match", "name"]) else {
+                return ToolBlock::Skip("pattern 없음".into());
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("pattern".into(), Value::String(pattern));
+            if let Some(p) = arg_str_any(&v, &["path", "dir", "directory"]) {
+                if let Some(p) = sanitize_path(&p) {
+                    args.insert("path".into(), Value::String(p));
+                }
+            }
+            if let Some(lim) = arg_num(&v, "limit") {
+                args.insert("limit".into(), Value::from(lim));
+            }
+            if let Some(h) = arg_bool(&v, "hidden") {
+                args.insert("hidden".into(), Value::Bool(h));
+            }
+            ToolBlock::Call(make_call(call_idx, "glob", Value::Object(args)))
+        }
+        "grep" => {
+            let Some(pattern) = arg_str_any(&v, &["pattern", "regex", "query", "needle"]) else {
+                return ToolBlock::Skip("pattern 없음".into());
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("pattern".into(), Value::String(pattern));
+            if let Some(p) = arg_str_any(&v, &["path", "dir", "directory"]) {
+                if let Some(p) = sanitize_path(&p) {
+                    args.insert("path".into(), Value::String(p));
+                }
+            }
+            if let Some(inc) = arg_str(&v, "include") {
+                args.insert("include".into(), Value::String(inc));
+            }
+            if let Some(l) = arg_num(&v, "limit") {
+                args.insert("limit".into(), Value::from(l));
+            }
+            if let Some(lit) = arg_bool(&v, "literal") {
+                args.insert("literal".into(), Value::Bool(lit));
+            }
+            if let Some(cs) = arg_bool(&v, "caseSensitive") {
+                args.insert("caseSensitive".into(), Value::Bool(cs));
+            }
+            ToolBlock::Call(make_call(call_idx, "grep", Value::Object(args)))
+        }
+        "edit" => {
+            let p = arg_str_any(&v, &["path", "file", "filepath", "filename", "src"]).as_deref().map(sanitize_path).flatten();
+            let (Some(path), Some(old), Some(new)) = (
+                p,
+                arg_str_any(&v, &["oldString", "old", "find", "before", "source"]),
+                arg_str_any(&v, &["newString", "new", "after", "replace", "target"]),
+            ) else {
+                return ToolBlock::Skip("path/oldString/newString 중 하나 없음 또는 path 거부".into());
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("path".into(), Value::String(path));
+            args.insert("oldString".into(), Value::String(old));
+            args.insert("newString".into(), Value::String(new));
+            if arg_bool(&v, "replaceAll").unwrap_or(false) {
+                args.insert("replaceAll".into(), Value::Bool(true));
+            }
+            ToolBlock::Call(make_call(call_idx, "edit", Value::Object(args)))
+        }
+        "shell" => {
+            let Some(command) = arg_str_any(&v, &["command", "cmd", "run", "script", "exe"]) else {
+                return ToolBlock::Skip("command 없음".into());
+            };
+            if is_destructive_command(&command) {
+                // 위험한 명령은 자동 실행 대신 사용자 확인 카드로
+                return ToolBlock::QuestionMarker(danger_shell_line(&command));
+            }
+            let mut args = serde_json::Map::new();
+            args.insert("command".into(), Value::String(command));
+            if let Some(w) = arg_str(&v, "workdir") {
+                if let Some(w) = sanitize_path(&w) {
+                    args.insert("workdir".into(), Value::String(w));
+                }
+            }
+            if let Some(t) = arg_num(&v, "timeout") {
+                args.insert("timeout".into(), Value::from(t));
+            }
+            if let Some(b) = arg_bool(&v, "background") {
+                args.insert("background".into(), Value::Bool(b));
+            }
+            ToolBlock::Call(make_call(call_idx, "shell", Value::Object(args)))
+        }
+        "question" => match serde_json::to_string(&v) {
+            Ok(_) => ToolBlock::QuestionMarker(question_marker(&v)),
+            Err(_) => ToolBlock::Skip("질문 JSON 직렬화 실패".into()),
+        },
+        _ => ToolBlock::Skip(format!("알 수 없는 도구: {name}")),
+    }
+}
+
+fn make_call(idx: &mut usize, name: &str, args: Value) -> Value {
+    let id = format!("callt_{idx:03}");
+    *idx += 1;
+    json!({
+        "id": id,
+        "type": "function",
+        "function": { "name": name, "arguments": args.to_string() }
+    })
+}
+
+fn arg_str(v: &Value, key: &str) -> Option<String> {
+    v.get(key)?.as_str().map(str::to_string)
+}
+
+/// 여러 키 중 하나라도 등장하는 값 (오타/약칭 허용).
+fn arg_str_any(v: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| arg_str(v, k))
+}
+
+/// TOOL 본문 파싱: JSON 객체(`{...}`)이거나 `key=value key2="값" ...` 형식이다.
+/// KV 모드는 ChatGPT 같은 웹 모델이 쉽게 출력하는 형태다 (따옴표 없이도 동작).
+fn parse_tool_body(body: &str) -> Result<Value, String> {
+    let body = body.trim();
+    if body.starts_with('{') {
+        return serde_json::from_str(body).map_err(|e| format!("JSON 파싱 실패: {e}"));
+    }
+    let mut obj = serde_json::Map::new();
+    for part in split_kv(body) {
+        let (k, v) = split_kv_item(&part).ok_or_else(|| format!("key=value 파싱 실패: {part}"))?;
+        obj.insert(k, Value::String(v));
+    }
+    Ok(Value::Object(obj))
+}
+
+/// 공백으로 구분된 key=value 나열 (따옴표 안 공백은 토큰으로 취급).
+fn split_kv(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in body.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                cur.push(ch);
+            }
+            ' ' | '\t' if !in_quotes => {
+                let t = cur.trim();
+                if !t.is_empty() {
+                    out.push(t.to_string());
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    let t = cur.trim();
+    if !t.is_empty() {
+        out.push(t.to_string());
+    }
+    out
+}
+
+fn split_kv_item(part: &str) -> Option<(String, String)> {
+    let p = part.trim();
+    let eq = p.find('=')?;
+    let key = p[..eq].trim();
+    if key.is_empty() {
+        return None;
+    }
+    let mut val = p[eq + 1..].trim().to_string();
+    if val.len() >= 2 && val.starts_with('"') && val.ends_with('"') {
+        val = val[1..val.len() - 1].to_string();
+    }
+    // 모델이 `\n`을 문자 그대로 쓰는 경우를 실제 개행으로 변환 (KV 한 줄 안에서 줄바꿈을 쓰는 관례).
+    let val = val.replace("\\n", "\n");
+    Some((key.to_string(), val))
+}
+
+fn arg_num(v: &Value, key: &str) -> Option<u64> {
+    v.get(key)?;
+    v.get(key)?
+        .as_u64()
+        .or_else(|| v.get(key)?.as_str()?.parse::<u64>().ok())
+}
+fn arg_bool(v: &Value, key: &str) -> Option<bool> {
+    v.get(key)?;
+    v.get(key)?
+        .as_bool()
+        .or_else(|| match v.get(key)?.as_str()? {
+            "true" | "yes" | "1" => Some(true),
+            "false" | "no" | "0" => Some(false),
+            _ => None,
+        })
+}
+
+/// 마커 라인 타입: 위험한 명령 확인용.
+const MARKER_DANGER_SHELL: &str = "danger_shell";
+
+fn danger_shell_line(command: &str) -> String {
+    let json = json!({
+        "header": "위험한 명령",
+        "question": format!("다음 명령은 되돌릴 수 없습니다. 실행할까요?\n\n{}", command),
+        "options": [
+            { "label": "실행", "description": "위험! 되돌릴 수 없음" },
+            { "label": "취소", "description": "실행하지 않음" }
+        ],
+        "multiple": false,
+        "command": command,
+        "marker": MARKER_DANGER_SHELL,
+    });
+    format!("CODEBRIDGE_QUESTION: {json}")
+}
+
+/// 모델이 준 opencode question 스키마 그대로 마커에 실어 UI가 그대로 렌더하도록 한다.
+fn question_marker(v: &Value) -> String {
+    let q0 = v
+        .get("questions")
+        .and_then(|q| q.get(0))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let json = json!({
+        "header": q0.get("header").and_then(|h| h.as_str()).unwrap_or("질문"),
+        "question": q0.get("question").and_then(|q| q.as_str()).unwrap_or("어떻게 할까요?"),
+        "options": q0.get("options").cloned().unwrap_or(Value::Array(vec![])),
+        "multiple": q0.get("multiple").and_then(|m| m.as_bool()).unwrap_or(false),
+        "marker": "question",
+    });
+    format!("CODEBRIDGE_QUESTION: {json}")
+}
+
+/// 파괴적 명령 패턴 (대소문자 무시). 여기에 걸리면 자동 실행하지 않고 사용자 확인 카드로 간다.
+/// 숫자 방지: 빈 명령/파라미터만으로는 걸리지 않는다.
+pub fn is_destructive_command(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    const PATTERNS: &[&str] = &[
+        "rm -rf", "rm -fr", "rm -r ", "rd /s", "rmdir /s", "del /f", "del /q", "del /s",
+        "format ", "format:", "format c", "diskpart", "reg delete", "reg add", "bcdedit",
+        "bootrec", "bcboot", "schtasks /create", "schtasks /delete", "icacls /deny",
+        "takeown", "cacls", "net user", "net stop ", "sc stop", "sc delete", "sc config",
+        "dism /", "attrib -r", "attrib -s", "cipher /d", "quickformat", "mkfs", "fdisk",
+        "partprobe", "dd if=", "shutdown", "reboot", "poweroff", "init 0", "rd /q",
+        "move /y", "deltree",
+    ];
+    PATTERNS.iter().any(|p| lower.contains(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_read_block_promotes() {
+        let text = "확인해보겠습니다\nTOOL read {\"path\": \"src/engine.ts\"}\n네";
+        let out = extract_tool_calls(text);
+        assert_eq!(out.calls.len(), 1);
+        assert_eq!(out.calls[0]["function"]["name"], "read");
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["path"], "src/engine.ts");
+    }
+
+    #[test]
+    fn tool_multiline_block_promotes() {
+        let text = "TOOL shell\n{\"command\": \"ls\", \"workdir\": \"docs\"}\nEND_TOOL";
+        let out = extract_tool_calls(text);
+        assert_eq!(out.calls.len(), 1);
+        assert_eq!(out.calls[0]["function"]["name"], "shell");
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["command"], "ls");
+    }
+
+    #[test]
+    fn tool_path_sandbox_rejects_parent() {
+        let out = extract_tool_calls("TOOL read {\"path\": \"../secret.txt\"}");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.issues.len(), 1);
+    }
+
+    #[test]
+    fn tool_path_sandbox_rejects_drive_absolute() {
+        let out = extract_tool_calls("TOOL read {\"path\": \"C:/secret.txt\"}");
+        assert_eq!(out.calls.len(), 0);
+    }
+
+    #[test]
+    fn shell_destructive_converts_to_question() {
+        let out = extract_tool_calls("TOOL shell {\"command\": \"rm -rf /\"}");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.question_lines.len(), 1);
+        assert!(out.question_lines[0].starts_with("CODEBRIDGE_QUESTION: "));
+        assert!(out.question_lines[0].contains("danger_shell"));
+    }
+
+    #[test]
+    fn shell_destructive_detection_matrix() {
+        assert!(is_destructive_command("rm -rf /"));
+        assert!(is_destructive_command("del /f x.txt"));
+        assert!(is_destructive_command("rd /s /q old\")"));
+        assert!(is_destructive_command("format c:"));
+        assert!(is_destructive_command("reg delete HKLM\\Software\\x /f"));
+        assert!(is_destructive_command("bcdedit /deletevalue foo"));
+        assert!(is_destructive_command("Shutdown /s /t 0"));
+        assert!(!is_destructive_command("git status"));
+        assert!(!is_destructive_command("npm test"));
+        assert!(!is_destructive_command("cargo test --release"));
+    }
+
+    #[test]
+    fn tool_question_block_becomes_marker() {
+        let out = extract_tool_calls("TOOL question {\"questions\":[{\"header\":\"방향\",\"question\":\"어떻게 할까요?\",\"options\":[{\"label\":\"A\",\"description\":\"x\"}],\"multiple\":false}]}");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.question_lines.len(), 1);
+        let line = &out.question_lines[0];
+        assert!(line.starts_with("CODEBRIDGE_QUESTION: "));
+        let json = line.trim_start_matches("CODEBRIDGE_QUESTION: ");
+        let v: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v["header"], "방향");
+        assert_eq!(v["question"], "어떻게 할까요?");
+        assert_eq!(v["options"][0]["label"], "A");
+    }
+
+    #[test]
+    fn tool_unknown_tool_ignored_with_issue() {
+        let out = extract_tool_calls("TOOL teleport {\"x\": 1}");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.issues.len(), 1);
+    }
+
+    #[test]
+    fn tool_edit_needs_all_fields() {
+        let out = extract_tool_calls("TOOL edit {\"path\": \"src/a.ts\", \"oldString\": \"a\"}");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.issues.len(), 1);
+    }
 
     #[test]
     fn two_files_with_paths() {

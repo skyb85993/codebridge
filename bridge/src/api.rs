@@ -83,6 +83,8 @@ pub struct ChatMessage {
     pub role: String,
     #[serde(default)]
     pub content: Option<Value>,
+    #[serde(default)]
+    pub tool_calls: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +117,7 @@ mod tests {
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: Some(Value::String(content.to_string())),
+                tool_calls: None,
             }],
             stream: false,
             tools: None,
@@ -349,6 +352,78 @@ fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
     }
 }
 
+/// 이전 tool 결과 직후(마지막 메시지가 role=tool): 마무리 조건이 되면 ACK,
+/// 아니면 None을 반환해서 ChatGPT에게 이어서 보내게 한다 (read/grep/question 루프).
+/// write/edit/shell만 있었고 결과에 실패 징후가 없으면 엔드턴 ACK.
+/// 실패 징후가 있으면 None을 반환해서 모델이 다시 고치도록 한다 (MAX_TOOL_TURNS가 무한 루프를 막는다).
+fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response> {
+    let tool_count = tool_turn_count(req);
+    if tool_count == 0 {
+        return None;
+    }
+    if tool_count >= MAX_TOOL_TURNS {
+        return Some(ack_response(
+            app,
+            req,
+            "도구 호출 횟수가 많아서 여기까지 실행했습니다. 필요한 부분을 확인하고 알려주세요.",
+        ));
+    }
+    let names = last_tool_names(req);
+    let all_terminal =
+        !names.is_empty() && names.iter().all(|n| TERMINAL_TOOLS.contains(&n.as_str()));
+    if !all_terminal {
+        return None;
+    }
+    // 실패 징후가 있으면 모델에게 재시도 기회를 준다 (무한 루프는 MAX_TOOL_TURNS로 제한).
+    if let Some(last) = req.messages.last() {
+        let txt = msg_tool_text(last);
+        if tool_text_looks_failed(&txt) {
+            return None;
+        }
+    }
+    Some(ack_response(app, req, "도구 실행이 완료되었습니다."))
+}
+
+/// 마지막 assistant 메시지의 tool_calls에서 도구 이름 목록을 뽑는다.
+fn last_tool_names(req: &ChatRequest) -> Vec<String> {
+    req.messages
+        .iter()
+        .rev()
+        .find_map(|m| {
+            if m.role == "assistant" {
+                m.tool_calls.as_ref().map(|tc| {
+                    tc.as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| {
+                                    v.get("function")
+                                        .and_then(|f| f.get("name"))
+                                        .and_then(|n| n.as_str())
+                                        .map(str::to_string)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// 이 요청에서 도구 루프 턴 수 (role=tool 메시지 개수).
+fn tool_turn_count(req: &ChatRequest) -> usize {
+    req.messages.iter().filter(|m| m.role == "tool").count()
+}
+
+/// 마지막 도구 실행을 끝낸 것으로 간주할 도구들:
+/// 파일 쓰기/수정처럼 "결과를 다시 모델에 보여줄 필요가 없는" 것들.
+const TERMINAL_TOOLS: &[&str] = &["write", "edit", "shell"];
+
+/// 도구 루프 안전 한도: 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
+const MAX_TOOL_TURNS: usize = 10;
+
 /// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
 async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     // 제목 생성 에이전트 요청은 ChatGPT를 호출하지 않고 즉시 축약 제목으로 응답한다
@@ -369,25 +444,17 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     }
     let n = arc.bump_counter();
 
-    // 도구 실행 결과를 막 받은 턴(마지막 메시지가 tool): 웹사이트를 재호출하지 않고 마무리.
-    // 이력 중 tool이 섞여 있어도 "현재 턴이 tool 턴"인지만 판정한다.
-    if let Some(last) = req.messages.last() {
-        if last.role == "tool" {
-            let tool_txt = msg_tool_text(last);
-            let (content, ok) = tool_turn_summary(&tool_txt);
-            let content = if ok {
-                content
-            } else {
-                let preview: String = tool_txt.chars().take(240).collect();
-                format!(
-                    "도구 실행이 실패한 것 같습니다: {preview}\n원인을 확인하고 다시 시도해 주세요."
-                )
-            };
-            if archive_enabled {
-                arc.record("ASSISTANT", &content);
+    // 도구 실행 결과를 막 받은 턴(마지막 메시지가 tool):
+    //   write/edit/shell 이면 엔드턴으로 ACK(웹챗 재호출 없음).
+    //   read/grep/glob/question 이면 결과를 프롬프트에 넣고 모델을 계속 불러 작업을 이어간다.
+    if let Some(ack) = ack_response_for_tools(app, req) {
+        if archive_enabled {
+            if let Some(last) = req.messages.last() {
+                let tool_txt = msg_tool_text(last);
+                arc.record("ASSISTANT", &tool_turn_summary(&tool_txt).0);
             }
-            return ack_response(app, req, &content);
         }
+        return ack;
     }
 
     let prompt = match harness::flatten::build(req, &workspace, None) {
@@ -609,13 +676,31 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     } else {
         translate::lenient::parse(&parse_src)
     };
-    let (calls, issues) = translate::lenient::to_tool_calls(&files);
+    let (write_calls, issues) = translate::lenient::to_tool_calls(&files);
+    let tool_promo = if truncated {
+        translate::lenient::ToolPromotion::default()
+    } else {
+        translate::lenient::extract_tool_calls(&raw)
+    };
+    let mut calls = write_calls;
+    calls.extend(tool_promo.calls);
+    let mut issues = issues;
+    issues.extend(tool_promo.issues);
+    let question_lines = tool_promo.question_lines;
     let mut text = raw.clone();
     if !issues.is_empty() {
         text.push_str(&format!(
             "\n\n(안내: 경로 주석이 없거나 불완전한 코드 블록 {}개는 저장 대상에서 제외했습니다.)",
             issues.len()
         ));
+    }
+    if !question_lines.is_empty() {
+        // CODEBRIDGE_QUESTION: {...} 마커를 텍스트에 그대로 싣는다 — UI가 파싱해 카드로 렌더한다.
+        text.push_str("\n\n");
+        for q in &question_lines {
+            text.push_str(q);
+            text.push('\n');
+        }
     }
     let finish = if calls.is_empty() { "stop" } else { "tool_calls" }.to_string();
 

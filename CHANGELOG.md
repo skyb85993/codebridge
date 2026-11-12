@@ -1,5 +1,21 @@
 # 릴리즈 노트
 
+## v0.5.0 (2026-11-12)
+
+**전체 도구 모드** — 코드브릿지가 코드 에이전트로서 파일/셸/질문 도구를 실제로 사용합니다.
+
+- 코드 수정 시 **모델이 `TOOL read/edit/glob/grep/shell` 한 줄씩 사용** — 브릿지가 해당 도구를 OpenAI tool_calls로 승격하고, opencode가 직접 실행 — 결과를 프롬프트에 넣어 모델이 다음 단계를 결정
+- **KV형 인자 형식** `TOOL edit path=a.ts old="hello" new="bye"` 와 JSON형 `TOOL read {"path":"a.ts"}` 둘 다 지원
+- **질문 도구**(proactive question): 모델이 방향을 물으면 UA된 대로 "어떻게 하지?" 카드로 렌더링하고 "선택: …" 메시지로 응답
+- **파괴적 명령 가드**: `rm -rf`, `dd`, `mkfs`, `Shutdown`, `reg delete`, `format`, `diskpart`, `schtasks`, `bcdedit` 등이 감지되면 실행 대신 **사용자 확인 카드**로 변형 — 사용자가 명시적으로 승인해야만 앱이 직접 실행
+- **다단계 도구 루프**: read→edit→verify 최대 10회까지 한 턴에 여러 도구 사용 가능
+- **`webfetch` 권한 복원**: shell/read/glob/grep/edit/write/question/skill/webfetch 모두 활성
+- **효율성 개선**: 단일 API 호출로 제목 생성 인터셉트, 다단계 대화 창 기록 지원
+- **Opencode 세션 표시**: 사이드바에 메시지 타입 tool-calls 표시
+- **코드 사이즈 축소**: flatten 프롬프트에서 대화 구조를 넣어 모델이 자신의 출력을 보고 이어가게 함
+- `BRIDGE_DEBUG_PROMPT=/path` 설정하면 전송한 프롬프트를 파일로 덤프 (디버그용)
+- Cargo 단위 테스트 35개 — TOOL 호출 파서/진단/경로 샌드박스/파괴적 명령 감지 모두 포함
+
 ## v0.4.9 (2026-11-12)
 
 CodeRabbit 리뷰(v0.4.6 이후 누적분, 6건)를 모두 반영한 하드닝 릴리스:
