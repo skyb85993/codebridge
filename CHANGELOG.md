@@ -1,5 +1,11 @@
 # 릴리즈 노트
 
+## v0.5.4 (2026-11-12)
+
+npm registry에서 `source-map-support@0.5.31` 타르볼이 내려왔던 CI 실패 복구:
+
+- `node_modules/source-map-support`를 0.5.21(0.5.31과 byte 동일)로 재고정 — lockfile 다시 설치 성공 확인
+
 ## v0.5.3 (2026-11-12)
 
 CI 마스터 통합 테스트 한 건 실패로 인한 안정화 릴리스:
