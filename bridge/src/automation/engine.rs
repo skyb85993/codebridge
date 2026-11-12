@@ -106,6 +106,13 @@ async fn site_op_lock() -> MutexGuard<'static, ()> {
     SITE_OP.get_or_init(|| Mutex::new(())).lock().await
 }
 
+/// 전용 Chrome 실행 직렬화: 두 요청이 동시에 Chrome을 띄워
+/// 디버그 포트(9333)를 두고 경합하는 것을 막는다.
+static CHROME_SPAWN: OnceLock<Mutex<()>> = OnceLock::new();
+async fn chrome_spawn_lock() -> MutexGuard<'static, ()> {
+    CHROME_SPAWN.get_or_init(|| Mutex::new(())).lock().await
+}
+
 fn host_of(url: &str) -> Option<String> {
     let rest = url.trim().split_once("://")?.1;
     let hostport = rest.split(['/', '?', '#']).next()?;
@@ -170,16 +177,17 @@ fn chrome_profile_dir() -> std::path::PathBuf {
 }
 
 /// 127.0.0.1:port/path 가 HTTP 200이면 true (CDP 생존 확인, 의존성 없이 raw TCP).
-/// 연결/쓰기/읽기 전부에 타임아웃을 건다 (멈춘 Chrome에 무한 대기하지 않도록).
+/// 연결/쓰기/읽기에 타임아웃을 걸고, 본문이 끝나기를 기다리지 않고 상태 라인이 오는지만 본다.
+/// 주의: Chrome 157+ 의 devtools HTTP 서버는 HTTP/1.0 요청에는 응답하지 않는다 (HTTP/1.1 필수).
 async fn http_ok(port: u16, path: &str) -> bool {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let task = async move {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
-        let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
         stream.write_all(req.as_bytes()).await.ok()?;
-        let mut buf = Vec::with_capacity(4096);
-        stream.read_to_end(&mut buf).await.ok()?;
-        let head = String::from_utf8_lossy(&buf);
+        let mut buf = [0u8; 512];
+        let n = stream.read(&mut buf).await.ok()?;
+        let head = String::from_utf8_lossy(&buf[..n]);
         Some(head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200"))
     };
     match tokio::time::timeout(std::time::Duration::from_secs(4), task).await {
@@ -210,46 +218,51 @@ impl Engine {
 
     /// 탭을 찾는다. allow_create=false이면 없을 때 None을 돌려준다 (probe처럼 읽기 전용인 경우).
     async fn find_tab(&self, browser: &Browser, site: Site, allow_create: bool) -> Result<Option<Page>, EngineError> {
-        // handler가 대상 목록을 받을 때까지 재시도
-        let mut pages = browser.pages().await.unwrap_or_default();
-        for _ in 0..12 {
-            if !pages.is_empty() {
+        // 대상 탭이 아직 로딩 중(about:blank 등)일 수 있으므로, 매칭되는 탭이 생길 때까지
+        // 재시도한 뒤에도 없을 때만 새 탭을 만든다 (중복 탭 방지).
+        let deadline = Instant::now() + Duration::from_secs(if allow_create { 12 } else { 6 });
+        let want_host = site_selectors(site).host.to_lowercase();
+        loop {
+            let pages = browser.pages().await.unwrap_or_default();
+            let mut fallback = None;
+            for p in pages {
+                let u = p.url().await.ok().flatten().unwrap_or_default();
+                // 정확한 origin(host) 검증: https + 정확히 일치하는 호스트만 신뢰 (example.com/chatgpt.com/c/x 같은 피싱 방지)
+                let ok = u.starts_with("https://")
+                    && host_of(&u).map(|h| h == want_host).unwrap_or(false);
+                if ok {
+                    // 대화/앱 URL 우선 (gemini.google.com/app/..., chatgpt.com/c/...)
+                    if site == Site::Gemini && u.contains("/app") {
+                        return Ok(Some(p));
+                    }
+                    if site == Site::ChatGpt && u.contains("/c/") {
+                        return Ok(Some(p));
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(p);
+                    }
+                }
+            }
+            if let Some(f) = fallback {
+                return Ok(Some(f));
+            }
+            if Instant::now() >= deadline {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
-            pages = browser.pages().await.unwrap_or_default();
         }
-        let mut fallback = None;
-        let want_host = site_selectors(site).host.to_lowercase();
-        for p in pages {
-            let u = p.url().await.ok().flatten().unwrap_or_default();
-            // 정확한 origin(host) 검증: https + 정확히 일치하는 호스트만 신뢰 (example.com/chatgpt.com/c/x 같은 피싱 방지)
-            let ok = u.starts_with("https://")
-                && host_of(&u).map(|h| h == want_host).unwrap_or(false);
-            if ok {
-                // 대화/앱 URL 우선 (gemini.google.com/app/..., chatgpt.com/c/...)
-                if site == Site::Gemini && u.contains("/app") {
-                    return Ok(Some(p));
-                }
-                if site == Site::ChatGpt && u.contains("/c/") {
-                    return Ok(Some(p));
-                }
-                fallback = Some(p);
-            }
+        if !allow_create {
+            return Ok(None);
         }
-        match fallback {
-            Some(p) => Ok(Some(p)),
-            None if allow_create => browser
-                .new_page(if site == Site::Gemini {
-                    "https://gemini.google.com/app"
-                } else {
-                    "https://chatgpt.com/"
-                })
-                .await
-                .map(Some)
-                .map_err(|e| EngineError::Page(e.to_string())),
-            None => Ok(None),
-        }
+        browser
+            .new_page(if site == Site::Gemini {
+                "https://gemini.google.com/app"
+            } else {
+                "https://chatgpt.com/"
+            })
+            .await
+            .map(Some)
+            .map_err(|e| EngineError::Page(e.to_string()))
     }
 
     async fn wait_for_composer(&self, page: &Page, site: Site, timeout_ms: u64) -> Result<bool, EngineError> {
@@ -465,19 +478,43 @@ impl Engine {
         if http_ok(self.cdp_port, "/json/version").await {
             return Ok(());
         }
+        // 두 요청이 동시에 도착해도 Chrome은 하나만 띄운다:
+        // 먼저 온 요청이 띄우는 동안 나머지는 기다렸다가 재사용한다.
+        let _spawn_guard = chrome_spawn_lock().await;
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Ok(());
+        }
         let exe = chrome_exe().ok_or_else(|| {
             EngineError::Connect("Chrome 실행 파일을 찾지 못했습니다".into())
         })?;
         let profile = chrome_profile_dir();
         let _ = std::fs::create_dir_all(&profile);
+        // 크래시 세션이 남아 있으면 옛 컴포저에 채워진 채 멈춰 있던 탭이 복원되어
+        // 새 대화를 오염시킨다. 전용 프로필의 세션 스냅샷을 지우고 깨끗하게 시작한다.
+        let default_dir = profile.join("Default");
+        for rel in ["Current Session", "Current Tabs", "Last Session", "Last Tabs"] {
+            let _ = std::fs::remove_file(default_dir.join(rel));
+        }
+        for dir in ["Sessions", "Sessions_Encrypted"] {
+            if let Ok(entries) = std::fs::read_dir(default_dir.join(dir)) {
+                for entry in entries.flatten() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let url = match site {
             Site::Gemini => "https://gemini.google.com/app",
             Site::ChatGpt => "https://chatgpt.com/",
         };
-        std::process::Command::new(&exe)
+        let child = std::process::Command::new(&exe)
             .args([
                 &format!("--remote-debugging-port={}", self.cdp_port),
                 &format!("--user-data-dir={}", profile.display()),
+                // 창을 화면 밖으로 — 사용자가 보거나 닫을 일이 없도록
+                "--window-position=-32000,-32000",
+                "--window-size=1200x800",
+                "--disable-session-crashed-bubble",
+                "--no-first-run",
                 url,
             ])
             .stdin(std::process::Stdio::null())
@@ -485,13 +522,33 @@ impl Engine {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| EngineError::Connect(format!("전용 Chrome 실행 실패: {e}")))?;
-        for _ in 0..40 {
+        let chrome_pid = child.id();
+        drop(child);
+        // 콜드 스타트(크래시 세션 복구 포함)는 20초를 넘길 수 있다 — 최대 45초까지 기다린다.
+        // 창이 생기는 시점이 제각각이므로 대기 루프 안에서 계속 숨기기를 시도한다.
+        let mut hidden = false;
+        for _ in 0..90 {
             tokio::time::sleep(Duration::from_millis(500)).await;
+            if !hidden && super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
+                hidden = true;
+                tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
+            }
             if http_ok(self.cdp_port, "/json/version").await {
+                // 창이 늦게 생기는 경우를 위해 짧게 한 번 더 시도
+                for _ in 0..20 {
+                    if !hidden && super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
+                        hidden = true;
+                        tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 return Ok(());
             }
         }
-        Err(EngineError::Connect("전용 Chrome이 뜨지 않았습니다 (20초 대기)".into()))
+        Err(EngineError::Connect(
+            "전용 Chrome이 뜨지 않았습니다 (45초 대기)".into(),
+        ))
     }
 
     /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.

@@ -291,3 +291,13 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - [ ] mock 모드 → 실제 사이트 자동화 전환 ([automation] mode) + flatten(평탄화) 구현 (Phase 1)
 - [ ] 인수인계(핸드오버) 프롬프트 구현 (F2.16~F2.20, 로테이션 체인: 같은 사이트 → Gemini)
 - [x] v0.1 독립 앱 포장: Electron + opencode serve 번들 (Phase 1.5) — `desktop/dist/CodeBridge Setup 0.1.0.exe` 생성
+
+## 전용 Chrome이 안 뜨던 것의 진짜 원인 (v0.4.3, 2026-11-12)
+
+설치본/소스 실행 모두에서 "안녕" → 무반응의 근본 원인은 하나가 아니라 여러 겹이었다 (전용 Chrome이 화면에 떠 보이던 증상 포함):
+
+- **Chrome 157의 devtools HTTP 서버는 HTTP/1.0 요청을 무시**(0바이트 수신). `http_ok`가 HTTP/1.0을 보내므로 연결은 되고 응답은 영원히 안 와서 4초 타임아웃 → 항상 false → 재시작할 때마다/첫 요청마다 "전용 Chrome이 뜨지 않았습니다" 오류. HTTP/1.1 + 첫 청크 전용으로 수정.
+- 두 요청(답변용+제목 생성용)이 동시에 `ensure_chrome` → 둘 다 http_ok=false → **Chrome 2개가 9333을 놓고 경합** → 진 쪽은 9333을 못 받아 45초 대기 후 실패. `chrome_spawn_lock` 싱글플라이트로 해결 (예: 숨김 로그가 1줄만 찍히고 Chrome 브라우저 1개만 뜸).
+- `--window-position=-32000,-32000`은 Chrome이 좌표를 클램프해 창이 **여전히 화면에 보일 수 있고 작업표시줄 버튼도 남음** → HWND를 `ShowWindow(SW_HIDE)`로 숨기는 Win32 FFI(winhide.rs)를 ensure_chrome에 통합 — 숨기면 작업표시줄에서도 사라짐. 전체 Chrome 프로세스를 죽였을 때 크래시 세션이 복원돼 옛 컴포저가 채워진 채 뜨던 문제도 세션 스냅샷 삭제로 해결.
+- 검증: 앱에서 "안녕, 한 줄로만 답해줘." 전송 → ChatGPT 전용 탭(/c/<id>)에 전송 → 응답 완료 → opencode 세션에 user 1/assistant stop/idle 저장 → 앱 UI 사이드바에 세션 생성("안녕! 😄 반가워!") → 전용 Chrome은 SW_HIDE로 숨김(작업표시줄 없음). 앱 프로세스 1개 + 설치본 자동 업데이트(재실행 시 0.4.3) 경로로 배포.
+- 참고(미수정, opencode 기본 동작): opencode는 사용자 메시지당 웹챗 호출을 2번(답변+제목 추정) 한다 — 둘 다 성공하므로 세션에는 user 1개+assistant stop 1개로만 저장됨. 무료 웹 채팅을 2배 쓰는 점은 향후 검토.
