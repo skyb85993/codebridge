@@ -62,7 +62,8 @@ export const api = {
     return r.json?.data as SessionInfo | undefined;
   },
   getMessages: async (sessionId: string): Promise<ChatMessage[]> => {
-    const r = await oc(`/api/session/${sessionId}/message?order=asc&limit=300`);
+    // opencode는 limit의 최대값을 200으로 제한한다 (300을 보내면 400 반환)
+    const r = await oc(`/api/session/${sessionId}/message?order=asc&limit=200`);
     return (r.json?.data as ChatMessage[]) ?? [];
   },
   sendPrompt: (sessionId: string, text: string) =>
