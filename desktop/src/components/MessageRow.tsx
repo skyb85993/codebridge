@@ -1,9 +1,11 @@
+import { AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import type { ChatMessage } from '../api';
 import ToolCallChip from './ToolCallChip';
 import QuestionCard, { type QuestionMarker } from './QuestionCard';
 
 const MARKER_PREFIX = 'CODEBRIDGE_QUESTION:';
+const TOOL_FAILED_PREFIX = 'codebridge:tool-failed:';
 
 function parseQuestionLine(line: string): QuestionMarker | null {
   const t = line.trim();
@@ -45,9 +47,22 @@ export default function MessageRow({
           {msg.content.map((part, i) => {
             if (part.type === 'text') {
               const lines = (part.text || '').split('\n');
-              const segments: Array<{ type: 'text' | 'card'; value?: string; marker?: QuestionMarker }> = [];
+              const segments: Array<
+                | { type: 'text'; value?: string }
+                | { type: 'card'; marker: QuestionMarker }
+                | { type: 'tool-failed'; count: number }
+              > = [];
               let buffer = '';
               for (const line of lines) {
+                const trimmed = line.trim();
+                // 도구 실패 배너 라인
+                if (trimmed.startsWith(TOOL_FAILED_PREFIX)) {
+                  if (buffer.trim()) segments.push({ type: 'text', value: buffer });
+                  buffer = '';
+                  const n = Number.parseInt(trimmed.slice(TOOL_FAILED_PREFIX.length), 10);
+                  segments.push({ type: 'tool-failed', count: Number.isFinite(n) ? n : 0 });
+                  continue;
+                }
                 const marker = parseQuestionLine(line);
                 if (marker) {
                   if (buffer.trim()) segments.push({ type: 'text', value: buffer });
@@ -72,13 +87,24 @@ export default function MessageRow({
                       >
                         <ReactMarkdown>{seg.value ?? ''}</ReactMarkdown>
                       </div>
-                    ) : (
+                    ) : seg.type === 'card' ? (
                       <QuestionCard
                         key={j}
-                        marker={seg.marker!}
+                        marker={seg.marker}
                         onAnswer={(t) => onAnswer?.(t)}
                         onRunApprovedShell={onRunApprovedShell}
                       />
+                    ) : (
+                      <div
+                        key={j}
+                        className="my-2 flex items-start gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2"
+                        title="도구 호출이 불완전하여 일부가 실행되지 않았습니다"
+                      >
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-300" strokeWidth={2.2} />
+                        <span className="text-[11.5px] leading-snug text-amber-200">
+                          도구 {seg.count ?? 1}건이 실행되지 않았습니다. "파일 전체를 다시 써줘"라고 요청해 보세요.
+                        </span>
+                      </div>
                     ),
                   )}
                 </div>

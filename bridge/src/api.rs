@@ -689,10 +689,9 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     let question_lines = tool_promo.question_lines;
     let mut text = raw.clone();
     if !issues.is_empty() {
-        text.push_str(&format!(
-            "\n\n(안내: 경로 주석이 없거나 불완전한 코드 블록 {}개는 저장 대상에서 제외했습니다.)",
-            issues.len()
-        ));
+        // UI가 파싱할 수 있는 마커. MessageRow가 `codebridge:tool-failed:N` 라인을
+        // 빨간색 안내 배지로 렌더한다.
+        text.push_str(&format!("\n\ncodebridge:tool-failed:{}\n", issues.len()));
     }
     if !question_lines.is_empty() {
         // CODEBRIDGE_QUESTION: {...} 마커를 텍스트에 그대로 싣는다 — UI가 파싱해 카드로 렌더한다.
@@ -701,6 +700,9 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             text.push_str(q);
             text.push('\n');
         }
+    }
+    if text.trim().is_empty() {
+        text = "완료되었습니다.".to_string();
     }
     let finish = if calls.is_empty() { "stop" } else { "tool_calls" }.to_string();
 
