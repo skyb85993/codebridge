@@ -231,7 +231,9 @@ mod tests {
             stream: false,
             tools: None,
         };
-        let dir = std::env::temp_dir().join(format!("cb_flat_{}", std::process::id()));
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cb_flat_{}_{}", std::process::id(), n));
         let out_dir = dir.join("src");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
@@ -267,7 +269,9 @@ mod tests {
             stream: false,
             tools: None,
         };
-        let dir = std::env::temp_dir().join(format!("cb_flat_{}", std::process::id()));
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cb_flat_{}_{}", std::process::id(), n));
         let out_dir = dir.join("src");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
