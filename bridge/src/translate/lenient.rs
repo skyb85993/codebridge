@@ -300,7 +300,7 @@ pub fn to_tool_calls(files: &[ParsedFile]) -> (Vec<Value>, Vec<String>) {
 //   - 파괴적 bash 명령은 자동 실행 대신 CODEBRIDGE_QUESTION 마커로 변환 (사용자 확인)
 // ---------------------------------------------------------------------------
 
-const TOOL_NAME: &[&str] = &["read", "glob", "grep", "edit", "shell", "question"];
+const TOOL_NAME: &[&str] = &["read", "glob", "grep", "websearch", "edit", "shell", "question"];
 const TOOL_END_LINE: &str = "END_TOOL";
 
 /// 파싱 결과: opencode로 보낼 tool_calls + 사용자에게 보여줄 마커 라인들.
@@ -458,6 +458,17 @@ fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock
                 args.insert("replaceAll".into(), Value::Bool(true));
             }
             ToolBlock::Call(make_call(call_idx, "edit", Value::Object(args)))
+        }
+        "websearch" => {
+            let Some(query) = arg_str_any(&v, &["query", "q", "search", "term", "needle"]) else {
+                return ToolBlock::Skip("query 없음".into());
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("query".into(), Value::String(query));
+            if let Some(n) = arg_num(&v, "limit") {
+                args.insert("limit".into(), Value::from(n));
+            }
+            ToolBlock::Call(make_call(call_idx, "websearch", Value::Object(args)))
         }
         "shell" => {
             let Some(command) = arg_str_any(&v, &["command", "cmd", "run", "script", "exe"]) else {
@@ -673,6 +684,70 @@ mod tests {
     fn tool_path_sandbox_rejects_drive_absolute() {
         let out = extract_tool_calls("TOOL read {\"path\": \"C:/secret.txt\"}");
         assert_eq!(out.calls.len(), 0);
+    }
+
+    #[test]
+    fn websearch_query_promotes() {
+        let out = extract_tool_calls("TOOL websearch query=\"코드브릿지\"");
+        assert_eq!(out.calls.len(), 1);
+        assert_eq!(out.calls[0]["function"]["name"], "websearch");
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["query"], "코드브릿지");
+    }
+
+    #[test]
+    fn glob_pattern_promotes_kv() {
+        let out = extract_tool_calls("TOOL glob pattern=src/**/*.ts");
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["pattern"], "src/**/*.ts");
+    }
+
+    #[test]
+    fn grep_pattern_promotes_kv() {
+        let out = extract_tool_calls("TOOL grep pattern=TODO path=src");
+        assert_eq!(out.calls.len(), 1);
+        assert_eq!(out.calls[0]["function"]["name"], "grep");
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["pattern"], "TODO");
+        assert_eq!(v["path"], "src");
+    }
+
+    #[test]
+    fn edit_alias_keys_promote_with_newlines() {
+        let out = extract_tool_calls("TOOL edit path=src/x.ts oldString=\"a\" newString=\"b\"");
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["oldString"], "a");
+        assert_eq!(v["newString"], "b");
+    }
+
+    #[test]
+    fn edit_old_new_aliases_promote() {
+        let out = extract_tool_calls("TOOL edit path=src/x.ts old=\"hello\" new=\"world\"");
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["oldString"], "hello");
+        assert_eq!(v["newString"], "world");
+    }
+
+    #[test]
+    fn question_single_line_promotes_marker() {
+        let out = extract_tool_calls("TOOL question header=방향 question=어떻게? options=A,B");
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.question_lines.len(), 1);
+    }
+
+    #[test]
+    fn shell_preview_unsafe_alias_promotes() {
+        let out = extract_tool_calls("TOOL shell cmd=\"ls\"");
+        assert_eq!(out.calls.len(), 1);
+        assert_eq!(out.calls[0]["function"]["name"], "shell");
     }
 
     #[test]

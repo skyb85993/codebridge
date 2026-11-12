@@ -1,5 +1,14 @@
 # 릴리즈 노트
 
+## v0.5.5 (2026-11-12)
+
+도구 확대 업데이트:
+
+- `TOOL websearch {"query":"..."}` — 웹 검색 도구를 TOOL로도 호출 가능 (코드 조정 도움 등)
+- 테스트 커버리지 7개 추가 (총 42개 green) — websearch/glob/grep/edit 등 모든 TOOL 라인 승격 확인:
+  websearch, glob, grep, edit (oldString/alias 포함), question 라인, shell alias `cmd=`
+- fence_convention.md: websearch 예시 추가
+
 ## v0.5.4 (2026-11-12)
 
 npm registry에서 `source-map-support@0.5.31` 타르볼이 내려왔던 CI 실패 복구:

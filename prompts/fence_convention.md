@@ -5,6 +5,7 @@ TOOL edit path=src/파일.ts oldString="원본문자열" newString="수정문자
 TOOL glob pattern=src/**/*.ts
 TOOL grep pattern=TODO path=src
 TOOL shell command="명령"
+TOOL websearch query="검색어"
 
 사용자: src/a.ts 파일을 읽고 hello를 bye로 바꿔줘
 당신: TOOL read path=src/a.ts
