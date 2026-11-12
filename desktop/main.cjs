@@ -133,8 +133,19 @@ function pickProjectFolder() {
 }
 
 // ---------- 서비스 spawn ----------
+function rotateLargeLog(name, capBytes = 5 * 1024 * 1024) {
+  try {
+    const p = path.join(LOG_DIR, name);
+    const st = fs.statSync(p);
+    if (st.size > capBytes) fs.renameSync(p, `${p}.1`);
+  } catch {
+    /* 로그 파일이 아직 없으면 무시 */
+  }
+}
+
 function spawnBridge(cwd) {
   if (bridgeProc) killChild(bridgeProc);
+  rotateLargeLog('bridge.log');
   const { stream } = logStream('bridge');
   const env = {
     ...process.env,
@@ -559,7 +570,8 @@ if (!gotLock) {
   });
 
   app.on('window-all-closed', () => {
-    // 트레이 앱 — 창이 닫혀도 백그라운드 유지 (완전 종료는 트레이에서)
+    // 창을 닫으면 백그라운드에 남지 않고 완전히 종료한다
+    app.quit();
   });
 
   app.on('before-quit', () => {
