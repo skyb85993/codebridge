@@ -53,17 +53,24 @@ export default function MessageRow({
                 | { type: 'tool-failed'; count: number }
               > = [];
               let buffer = '';
+              let inFence = false;
               for (const line of lines) {
                 const trimmed = line.trim();
-                // 도구 실패 배너 라인
-                if (trimmed.startsWith(TOOL_FAILED_PREFIX)) {
+                // 코드 블록 펜스는 토글 (펜스가 아닌 줄에만 마커를 판별)
+                if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+                  inFence = !inFence;
+                  buffer += line + '\n';
+                  continue;
+                }
+                // 도구 실패 배너 라인 (펜스 안에서는 텍스트로 유지)
+                if (!inFence && trimmed.startsWith(TOOL_FAILED_PREFIX)) {
                   if (buffer.trim()) segments.push({ type: 'text', value: buffer });
                   buffer = '';
                   const n = Number.parseInt(trimmed.slice(TOOL_FAILED_PREFIX.length), 10);
                   segments.push({ type: 'tool-failed', count: Number.isFinite(n) ? n : 0 });
                   continue;
                 }
-                const marker = parseQuestionLine(line);
+                const marker = inFence ? null : parseQuestionLine(line);
                 if (marker) {
                   if (buffer.trim()) segments.push({ type: 'text', value: buffer });
                   buffer = '';

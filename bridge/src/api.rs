@@ -702,7 +702,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     }
     if text.trim().is_empty() {
-        text = "완료되었습니다.".to_string();
+        text = "응답이 비어 있습니다 — 모델이 출력을 생성하지 못했습니다. 다시 시도해 주세요.".to_string();
     }
     let finish = if calls.is_empty() { "stop" } else { "tool_calls" }.to_string();
 
