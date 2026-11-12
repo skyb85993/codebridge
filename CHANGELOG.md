@@ -1,5 +1,13 @@
 # 릴리즈 노트
 
+## v0.5.6 (2026-11-12)
+
+CodeRabbit 리뷰 지적 모두 수정:
+
+- **단일형 `TOOL question header=... question=... options="A,B"` 에서 header/question/options 필드가 모두 마커로 실제 전달** — 문자열 옵션은 쉼표 분리 → `{label,description}` 객체로 변환 (이전에는 header="질문", options=[]로 떨어져 모델이 보낸 정보를 UI가 못 받았음)
+- 병렬 테스트 race 수정에서 **공유 TEST_COUNTER로 이동** — 두 prompt-build 테스트가 같은 카운터를 써서 `cb_flat_<pid>_0` 충돌 없이 실행
+- 테스트 추가 1개 (배열형 question 스키마 마커 전달됨) — 총 43 green
+
 ## v0.5.5 (2026-11-12)
 
 도구 확대 업데이트:

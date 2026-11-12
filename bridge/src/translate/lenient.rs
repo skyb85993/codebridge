@@ -615,20 +615,48 @@ fn danger_shell_line(command: &str) -> String {
 }
 
 /// 모델이 준 opencode question 스키마 그대로 마커에 실어 UI가 그대로 렌더하도록 한다.
+/// 두 가지 입력을 모두 수용한다:
+///   ① 배열형("questions":[{header,question,options[]...}]) — opencode 기본 스키마
+///   ② 단일형(header=방향 question=어떻게? options="A, B") — TOOL 한 줄 단일형
 fn question_marker(v: &Value) -> String {
-    let q0 = v
-        .get("questions")
-        .and_then(|q| q.get(0))
-        .cloned()
-        .unwrap_or(Value::Null);
+    // ① 배열형
+    if let Some(q0) = v.get("questions").and_then(|q| q.get(0)) {
+        let json = json!({
+            "header": q0.get("header").and_then(|h| h.as_str()).unwrap_or("질문"),
+            "question": q0.get("question").and_then(|q| q.as_str()).unwrap_or("어떻게 할까요?"),
+            "options": q0.get("options").cloned().unwrap_or(Value::Array(vec![])),
+            "multiple": q0.get("multiple").and_then(|m| m.as_bool()).unwrap_or(false),
+            "marker": "question",
+        });
+        return format!("CODEBRIDGE_QUESTION: {json}");
+    }
+    // ② 단일형: 최상위 header/question/options
     let json = json!({
-        "header": q0.get("header").and_then(|h| h.as_str()).unwrap_or("질문"),
-        "question": q0.get("question").and_then(|q| q.as_str()).unwrap_or("어떻게 할까요?"),
-        "options": q0.get("options").cloned().unwrap_or(Value::Array(vec![])),
-        "multiple": q0.get("multiple").and_then(|m| m.as_bool()).unwrap_or(false),
+        "header": v.get("header").and_then(|h| h.as_str()).unwrap_or("질문"),
+        "question": v.get("question").and_then(|q| q.as_str()).unwrap_or("어떻게 할까요?"),
+        "options": Value::Array(parse_flat_options(v.get("options"))),
+        "multiple": v.get("multiple").and_then(|m| m.as_bool()).unwrap_or(false),
         "marker": "question",
     });
     format!("CODEBRIDGE_QUESTION: {json}")
+}
+
+/// 단일형 options 값에서 항목 목록을 만든다.
+/// - 문자열이면 쉼표(`,`)로 분리한다.
+/// - 배열이면 각 원소를 그대로 담는다(이미 {label,...} 구조일 가능성).
+/// - 문자열을 {label,description:""} 형태의 object로 포장한다.
+fn parse_flat_options(opt: Option<&Value>) -> Vec<Value> {
+    match opt {
+        None => vec![],
+        Some(Value::String(s)) => s
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| json!({"label": x, "description": ""}))
+            .collect(),
+        Some(Value::Array(a)) => a.iter().cloned().collect(),
+        Some(other) => vec![other.clone()],
+    }
 }
 
 /// 파괴적 명령 패턴 (대소문자 무시). 여기에 걸리면 자동 실행하지 않고 사용자 확인 카드로 간다.
@@ -741,6 +769,27 @@ mod tests {
         let out = extract_tool_calls("TOOL question header=방향 question=어떻게? options=A,B");
         assert_eq!(out.calls.len(), 0);
         assert_eq!(out.question_lines.len(), 1);
+        // 단일형이면 header/question/options가 모두 실제 값으로 전달되어야 한다
+        let line = &out.question_lines[0];
+        let json = line.trim_start_matches("CODEBRIDGE_QUESTION: ");
+        let v: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v["header"], "방향");
+        assert_eq!(v["question"], "어떻게?");
+        assert_eq!(v["options"][0]["label"], "A");
+        assert_eq!(v["options"][1]["label"], "B");
+    }
+
+    #[test]
+    fn question_array_schema_promotes_marker() {
+        let out = extract_tool_calls(
+            r#"TOOL question {"questions":[{"header":"방향","question":"어떻게?","options":[{"label":"A","description":"x"},{"label":"B","description":"y"}],"multiple":false}]}"#,
+        );
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.question_lines.len(), 1);
+        let json = out.question_lines[0].trim_start_matches("CODEBRIDGE_QUESTION: ");
+        let v: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v["header"], "방향");
+        assert_eq!(v["options"][1]["label"], "B");
     }
 
     #[test]
