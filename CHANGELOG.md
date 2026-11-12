@@ -1,5 +1,15 @@
 # 릴리즈 노트
 
+## v0.4.4 (2026-11-12)
+
+설치 마법사를 다크 브랜드로 개선:
+
+- **설치 옵션 선택(모든 사용자/전용) 페이지 제거** — `perMachine: true`로 강제(기존에도 `C:\Program Files\CodeBridge`에 머신별 설치되어 있었음)
+- **폴더 선택 페이지 제거** — `allowToChangeInstallationDirectory: false`
+- **환영 페이지 추가** — 다크 네이비 배경 + 밝은 텍스트 + 풀블리드 브랜드 사이드바(로고/단어마크/태그라인 "무료 AI 코딩 에이전트")
+- 사이드바/헤더 이미지 전면 재제작(다크 네이비 + 시안→민트 글로우), 언인스톨러 마법사도 동일한 다크 브랜드 적용 (`uninstallerSidebar`)
+- `installer-brand.nsh`로 `MUI_BGCOLOR`/`MUI_TEXTCOLOR` 다크 테마 + `customWelcomePage` 매크로 주입 (헤더/진행 페이지 비트맵 유지)
+
 ## v0.4.3 (2026-11-12)
 
 중요 수정 — 전용 Chrome이 응답하면 다음 요청이 정상 동작하도록 브릿지 수정:
