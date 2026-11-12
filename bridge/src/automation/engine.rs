@@ -473,17 +473,21 @@ impl Engine {
         self.rotate_new_chat_site(Site::ChatGpt).await
     }
 
+    fn dedicated_chrome_pid_path() -> std::path::PathBuf {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let dir = std::path::PathBuf::from(appdata).join("CodeBridge");
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.join("dedicated-chrome.pid");
+        }
+        std::path::PathBuf::from("dedicated-chrome.pid")
+    }
+
+    fn write_dedicated_chrome_pid(pid: u32) {
+        let _ = std::fs::write(Self::dedicated_chrome_pid_path(), pid.to_string());
+    }
+
     /// 전용 Chrome이 CDP에 응답하지 않으면 그때 띄운다 (지연 실행).
-    async fn ensure_chrome(&self, site: Site) -> Result<(), EngineError> {
-        if http_ok(self.cdp_port, "/json/version").await {
-            return Ok(());
-        }
-        // 두 요청이 동시에 도착해도 Chrome은 하나만 띄운다:
-        // 먼저 온 요청이 띄우는 동안 나머지는 기다렸다가 재사용한다.
-        let _spawn_guard = chrome_spawn_lock().await;
-        if http_ok(self.cdp_port, "/json/version").await {
-            return Ok(());
-        }
+    async fn spawn_chrome(&self, site: Site, hide: bool) -> Result<u32, EngineError> {
         let exe = chrome_exe().ok_or_else(|| {
             EngineError::Connect("Chrome 실행 파일을 찾지 못했습니다".into())
         })?;
@@ -510,7 +514,7 @@ impl Engine {
             .args([
                 &format!("--remote-debugging-port={}", self.cdp_port),
                 &format!("--user-data-dir={}", profile.display()),
-                // 창을 화면 밖으로 — 사용자가 보거나 닫을 일이 없도록
+                // 창을 화면 밖으로 — 어차피 SW_HIDE로 완전히 숨긴다
                 "--window-position=-32000,-32000",
                 "--window-size=1200x800",
                 "--disable-session-crashed-bubble",
@@ -525,30 +529,65 @@ impl Engine {
         let chrome_pid = child.id();
         drop(child);
         // 콜드 스타트(크래시 세션 복구 포함)는 20초를 넘길 수 있다 — 최대 45초까지 기다린다.
-        // 창이 생기는 시점이 제각각이므로 대기 루프 안에서 계속 숨기기를 시도한다.
-        let mut hidden = false;
+        // 창이 생기는 시점이 제각각이므로 대기 루프 안에서 계속 숨김/표시를 시도한다.
+        let mut done = false;
         for _ in 0..90 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if !hidden && super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
-                hidden = true;
-                tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
+            if !done {
+                if hide {
+                    if super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
+                        done = true;
+                        tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
+                    }
+                } else if super::winhide::show_chrome_windows_for_pid(chrome_pid) > 0 {
+                    done = true;
+                    tracing::info!("전용 Chrome 창을 화면에 표시했습니다 (pid={})", chrome_pid);
+                }
             }
             if http_ok(self.cdp_port, "/json/version").await {
                 // 창이 늦게 생기는 경우를 위해 짧게 한 번 더 시도
                 for _ in 0..20 {
-                    if !hidden && super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
-                        hidden = true;
-                        tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
-                        break;
+                    if !done {
+                        if hide {
+                            if super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
+                                done = true;
+                                tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
+                                break;
+                            }
+                        } else if super::winhide::show_chrome_windows_for_pid(chrome_pid) > 0 {
+                            done = true;
+                            tracing::info!("전용 Chrome 창을 화면에 표시했습니다 (pid={})", chrome_pid);
+                            break;
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                return Ok(());
+                Self::write_dedicated_chrome_pid(chrome_pid);
+                return Ok(chrome_pid);
             }
         }
         Err(EngineError::Connect(
             "전용 Chrome이 뜨지 않았습니다 (45초 대기)".into(),
         ))
+    }
+
+    /// 전용 Chrome이 CDP에 응답하지 않으면 그때 띄운다 (지연 실행).
+    async fn ensure_chrome(&self, site: Site) -> Result<(), EngineError> {
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Ok(());
+        }
+        // 두 요청이 동시에 도착해도 Chrome은 하나만 띄운다:
+        // 먼저 온 요청이 띄우는 동안 나머지는 기다렸다가 재사용한다.
+        let _spawn_guard = chrome_spawn_lock().await;
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Ok(());
+        }
+        self.spawn_chrome(site, true).await.map(|_| ())
+    }
+
+    /// pid가 알려지지 않은(예: 숨겨진) Chrome을 보이게 새로 띄울 때 사용한다.
+    pub async fn show_chrome_visible(&self, site: Site) -> Result<u32, EngineError> {
+        self.spawn_chrome(site, false).await
     }
 
     /// 프롬프트를 전송하고, 완료될 때까지 기다린 뒤 assistant 텍스트를 돌려준다.

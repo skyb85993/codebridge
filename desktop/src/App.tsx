@@ -173,6 +173,10 @@ export default function App() {
     [busy, projectDir, pickProject, ensureSession, loadMessages],
   );
 
+  const showChrome = useCallback(() => {
+    void window.codebridge.showChrome();
+  }, []);
+
   const interrupt = useCallback(async () => {
     if (!activeId) return;
     try {
@@ -271,6 +275,7 @@ export default function App() {
             projectDir={projectDir}
             onPickProject={pickProject}
             probe={probe}
+            onShowChrome={showChrome}
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">

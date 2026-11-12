@@ -39,6 +39,7 @@ async fn main() {
         .route("/v1/chat/completions", post(api::chat_completions))
         .route("/v1/handover/trigger", post(api::trigger_handover))
         .route("/v1/handover/events", get(api::handover_events))
+        .route("/v1/chrome/show", get(api::show_chrome))
         .with_state(AppState {
             cfg: Arc::new(cfg),
             manual_handover: Arc::new(AtomicBool::new(false)),

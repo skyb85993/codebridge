@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "small_model": "webchat/webchat-title",
   "provider": {
     "webchat": {
       "name": "Web Chat (CodeBridge)",
@@ -15,6 +16,10 @@
         "webchat-gemini": {
           "name": "Google Gemini (web)",
           "tool_call": true
+        },
+        "webchat-title": {
+          "name": "CodeBridge Title Generator",
+          "tool_call": false
         }
       }
     }

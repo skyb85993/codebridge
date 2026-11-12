@@ -11,6 +11,7 @@ interface SidebarProps {
   projectDir: string | null;
   onPickProject: () => void;
   probe: HostProbe | null;
+  onShowChrome: () => void;
 }
 
 export default function Sidebar({
@@ -21,8 +22,10 @@ export default function Sidebar({
   projectDir,
   onPickProject,
   probe,
+  onShowChrome,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
+  const [opening, setOpening] = useState(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -32,6 +35,8 @@ export default function Sidebar({
 
   const chatgpt = probe?.sites.find((s) => s.site === 'chatgpt');
   const gemini = probe?.sites.find((s) => s.site === 'gemini');
+  const loginRequired =
+    probe?.sites.some((s) => s.login_required) ?? (probe?.login_required ?? false);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-lineSoft bg-panel/70 backdrop-blur-xl">
@@ -111,6 +116,28 @@ export default function Sidebar({
           );
         })}
       </nav>
+
+      {/* 로그인 필요 배너 */}
+      {loginRequired && (
+        <div className="mx-2 mb-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2.5">
+          <p className="text-[11px] font-semibold leading-snug text-amber-300">
+            웹 채팅 로그인이 필요해요
+          </p>
+          <p className="mt-0.5 text-[10px] leading-snug text-amber-200/70">
+            버튼을 누르면 전용 Chrome이 화면에 표시됩니다. 로그인을 완료하면 창을 닫으세요.
+          </p>
+          <button
+            onClick={() => {
+              setOpening(true);
+              onShowChrome();
+              window.setTimeout(() => setOpening(false), 1500);
+            }}
+            className="mt-2 w-full rounded-lg bg-amber-400 px-2 py-1.5 text-[11px] font-bold text-[#332100] transition-all hover:bg-amber-300"
+          >
+            {opening ? '전용 Chrome 여는 중…' : '전용 Chrome 열기'}
+          </button>
+        </div>
+      )}
 
       {/* 하단 상태 */}
       <div className="border-t border-lineSoft px-4 py-2.5">

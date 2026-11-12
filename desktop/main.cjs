@@ -26,7 +26,7 @@ try {
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 app.setPath('userData', path.join(app.getPath('appData'), 'CodeBridge'));
 
@@ -436,7 +436,91 @@ function createWindow() {
   mainWindow.loadFile(path.join(UI_DIR, 'index.html'));
 }
 
+// 전용 Chrome의 프로세스 id를 기억해 둔다 (%APPDATA%CodeBridge\dedicated-chrome.pid).
+// 앱 종료 시 이 pid로 전용 Chrome을 함께 종료하고, 로그인이 필요할 때 다시 띄우는 데도 쓴다.
+const CHROME_PID_PATH = path.join(DATA_DIR, 'dedicated-chrome.pid');
+
+function readChromePid() {
+  try {
+    const n = Number(fs.readFileSync(CHROME_PID_PATH, 'utf8').trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function findDedicatedChromePidByWmi() {
+  try {
+    const q = spawnSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -match 'chrome-profile' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1 -ExpandProperty ProcessId",
+      ],
+      { windowsHide: true, encoding: 'utf8', timeout: 8000 },
+    );
+    const n = Number((q.stdout || '').trim());
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+// 전용 Chrome 트리 전체를 종료한다. pid 파일이 우선, 없거나 죽었으면 WMI로 탐색한다.
+// (Chrome은 앱을 꺼도 계속 떠 있으면 안 된다 — before-quit에서 호출)
+function findDedicatedChromePid() {
+  const fromFile = readChromePid();
+  if (fromFile && pidAlive(fromFile)) return fromFile;
+  return findDedicatedChromePidByWmi();
+}
+
+function killDedicatedChrome() {
+  const pid = findDedicatedChromePid();
+  if (pid) {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true });
+    } catch {
+      /* 이미 종료된 경우 무시 */
+    }
+  }
+  try {
+    fs.unlinkSync(CHROME_PID_PATH);
+  } catch {
+    /* 파일이 없으면 무시 */
+  }
+}
+
+function pidAlive(pid) {
+  try {
+    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], {
+      windowsHide: true,
+      encoding: 'utf8',
+    });
+    return !!r.stdout && r.stdout.includes(String(pid));
+  } catch {
+    return false;
+  }
+}
+
 // ---------- IPC ----------
+// 전용 Chrome을 화면에 꺼낸다 (로그인/캡차 해결용). 숨겨진 인스턴스가 있으면 그 창을 앞으로,
+// 없으면 WMI로 전용 프로필을 쓰는 브라우저 프로세스를 찾아 꺼내고, 그것도 없으면 새로 띄운다.
+ipcMain.handle('app:showChrome', async () => {
+  try {
+    let pid = readChromePid();
+    if (!pid || !pidAlive(pid)) {
+      pid = findDedicatedChromePidByWmi();
+    }
+    const path = pid ? `/v1/chrome/show?pid=${pid}` : '/v1/chrome/show';
+    const r = await httpGetJson(BRIDGE_PORT, path, 20000);
+    appendLog('boot', `[boot] showChrome -> ${JSON.stringify(r.json || {})}\n`);
+    return r.json || { ok: false, error: 'bridge returned no body' };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 ipcMain.on('window:action', (_e, action) => {
   if (!mainWindow) return;
   switch (action) {
@@ -578,5 +662,6 @@ if (!gotLock) {
     appQuitting = true;
     killChild(bridgeProc);
     killChild(opencodeProc);
+    killDedicatedChrome();
   });
 }

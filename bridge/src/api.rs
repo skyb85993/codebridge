@@ -2,7 +2,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -67,6 +67,12 @@ pub async fn list_models() -> Json<Value> {
                 "object": "model",
                 "created": 1700000002,
                 "owned_by": "codebridge"
+            },
+            {
+                "id": "webchat-title",
+                "object": "model",
+                "created": 1700000004,
+                "owned_by": "codebridge"
             }
         ]
     }))
@@ -97,6 +103,50 @@ fn user_text(req: &ChatRequest) -> String {
         .filter_map(|m| m.content.as_ref().and_then(|c| c.as_str()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_req(model: &str, content: &str) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(Value::String(content.to_string())),
+            }],
+            stream: false,
+            tools: None,
+        }
+    }
+
+    #[test]
+    fn title_extracts_request_line() {
+        let r = mk_req(
+            "webchat-title",
+            "헤더\n\n[이번 사용자 요청]\n로블록스 게임 스켈레톤 만들어줘\n\n[답변 요청]\n지시",
+        );
+        assert_eq!(title_from(&r), "로블록스 게임 스켈레톤 만들어줘");
+    }
+
+    #[test]
+    fn title_uses_first_nonempty_line() {
+        let r = mk_req("webchat-title", "\n\n  첫 줄 제목입니다  \n두 번째 줄");
+        assert_eq!(title_from(&r), "첫 줄 제목입니다");
+    }
+
+    #[test]
+    fn title_truncates_to_34_chars() {
+        let r = mk_req("webchat-title", "가".repeat(80).as_str());
+        assert_eq!(title_from(&r).chars().count(), 34);
+    }
+
+    #[test]
+    fn title_empty_falls_back_to_default() {
+        let r = mk_req("webchat-title", "[답변 요청]\n[답변 요청]");
+        assert_eq!(title_from(&r), "새 대화");
+    }
 }
 
 /// OpenAI 호환 채팅 완성 엔드포인트.
@@ -159,6 +209,33 @@ pub async fn probe_web(State(app): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// 전용 Chrome을 팝업합니다 (로그인/캡차 해결용).
+/// pid 쿼리를 주면 그 프로세스의 창을 화면 앞으로 꺼내고, 없으면 보이는 창으로 새로 띄운다.
+pub async fn show_chrome(
+    State(app): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    if let Some(pid) = q.get("pid").and_then(|s| s.parse::<u32>().ok()) {
+        if super::automation::winhide::process_alive(pid) {
+            let n = super::automation::winhide::show_chrome_windows_for_pid(pid);
+            return Json(json!({
+                "ok": n > 0,
+                "action": if n > 0 { "shown" } else { "no-window" },
+                "pid": pid,
+            }));
+        }
+        return Json(json!({ "ok": false, "action": "not-running", "pid": pid }));
+    }
+    let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
+    match engine
+        .show_chrome_visible(automation::engine::Site::ChatGpt)
+        .await
+    {
+        Ok(pid) => Json(json!({ "ok": true, "action": "spawned", "pid": pid })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 /// 현재 tool 턴의 결과에서 실패 징후를 찾는다. opencode tool 결과는 JSON이거나 일반 텍스트.
 fn tool_text_looks_failed(text: &str) -> bool {
     let lower = text.to_lowercase();
@@ -195,6 +272,36 @@ fn tool_turn_summary(tool_txt: &str) -> (String, bool) {
             .to_string(),
         true,
     )
+}
+
+/// 제목 생성 에이전트용 가짜 모델: opencode의 small_model("webchat/webchat-title")을
+/// 여기서 즉시 축약 제목으로 응답한다. ChatGPT/Gemini를 호출하지 않아 쿼터를 쓰지 않는다.
+fn title_from(req: &ChatRequest) -> String {
+    let joined = req
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| msg_tool_text(m))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut t = joined;
+    if let Some(i) = t.find("[이번 사용자 요청]") {
+        t = t[i + "[이번 사용자 요청]".len()..].to_string();
+    }
+    if let Some(i) = t.find("[답변") {
+        t = t[..i].to_string();
+    }
+    let line = t
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let clean: String = line.chars().take(34).collect();
+    if clean.is_empty() {
+        "새 대화".to_string()
+    } else {
+        clean
+    }
 }
 
 fn msg_tool_text(m: &ChatMessage) -> String {
@@ -241,6 +348,13 @@ fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
 
 /// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
 async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
+    // 제목 생성 에이전트 요청은 ChatGPT를 호출하지 않고 즉시 축약 제목으로 응답한다
+    // (opencode의 small_model = "webchat/webchat-title").
+    if req.model == "webchat-title" {
+        let title = title_from(req);
+        tracing::info!("[title] 제목 요청 인터셉트 — \"{}\"", title);
+        return ack_response(app, req, &title);
+    }
     let id = next_id();
     let workspace =
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

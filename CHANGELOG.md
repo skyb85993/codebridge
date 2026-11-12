@@ -1,5 +1,15 @@
 # 릴리즈 노트
 
+## v0.4.8 (2026-11-12)
+
+중요 수정/개선:
+
+- **메시지 1개당 ChatGPT 2회 호출되던 문제 해결** — opencode의 숨겨진 `title` 에이전트가 메인 모델로 폴백되어 웹 채팅을 두 번 부르던 것. 브릿지에 `webchat-title` 가짜 모델을 추가하고 사용자 요청의 첫 줄을 제목으로 즉시 응답하도록 처리 (ChatGPT를 부르지 않음). 템플릿/사용자 프로젝트의 `opencode.json`에 `small_model: "webchat/webchat-title"` 추가
+- **로그인 필요 시 전용 Chrome을 바로 꺼낼 수 있는 배너 + 버튼** — 사이드바에 "웹 채팅 로그인이 필요해요 / 전용 Chrome 열기" 버튼 (probe가 login_required일 때 표시). 버튼은 pid 파일→tasklist→WMI 순으로 전용 Chrome을 찾아 `SW_SHOW`+화면 안으로 이동시킴 (없으면 보이는 창으로 새로 실행)
+- **앱을 끄면 숨겨진 Chrome도 함께 종료** — `before-quit`에서 pid 파일/ WMI로 전용 Chrome 프로세스를 taskkill. 기존 Chrome은 그대로 유지
+- 전용 Chrome spawn 시 pid를 `%APPDATA%CodeBridge\dedicated-chrome.pid`에 기록 (show/kill의 기준)
+- `GET /v1/chrome/show?pid=N` — pid 기반 show 엔드포인트 추가
+
 ## v0.4.7 (2026-11-12)
 
 설치/업데이트를 ChatGPT 앱처럼 — 설치 마법사를 완전히 제거:

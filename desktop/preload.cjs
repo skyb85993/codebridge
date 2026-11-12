@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('codebridge', {
   ocFetch(path, init) {
     return ipcRenderer.invoke('oc:fetch', path, init);
   },
+  showChrome() {
+    return ipcRenderer.invoke('app:showChrome');
+  },
   windowAction(action) {
     ipcRenderer.send('window:action', action);
   },
