@@ -301,3 +301,41 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `--window-position=-32000,-32000`은 Chrome이 좌표를 클램프해 창이 **여전히 화면에 보일 수 있고 작업표시줄 버튼도 남음** → HWND를 `ShowWindow(SW_HIDE)`로 숨기는 Win32 FFI(winhide.rs)를 ensure_chrome에 통합 — 숨기면 작업표시줄에서도 사라짐. 전체 Chrome 프로세스를 죽였을 때 크래시 세션이 복원돼 옛 컴포저가 채워진 채 뜨던 문제도 세션 스냅샷 삭제로 해결.
 - 검증: 앱에서 "안녕, 한 줄로만 답해줘." 전송 → ChatGPT 전용 탭(/c/<id>)에 전송 → 응답 완료 → opencode 세션에 user 1/assistant stop/idle 저장 → 앱 UI 사이드바에 세션 생성("안녕! 😄 반가워!") → 전용 Chrome은 SW_HIDE로 숨김(작업표시줄 없음). 앱 프로세스 1개 + 설치본 자동 업데이트(재실행 시 0.4.3) 경로로 배포.
 - 참고(미수정, opencode 기본 동작): opencode는 사용자 메시지당 웹챗 호출을 2번(답변+제목 추정) 한다 — 둘 다 성공하므로 세션에는 user 1개+assistant stop 1개로만 저장됨. 무료 웹 채팅을 2배 쓰는 점은 향후 검토.
+
+## v0.4.4 ~ v0.5.6 — 배포 모델 확정, 도구 모드, 안정화 (2026-11-12)
+
+**배포/설치 모델 (v0.4.4~v0.4.9)**
+
+- 설치 마법사+UAC 요구하던 구조(`perMachine: true`, NSIS 마법사 페이지)를 **NSIS oneClick + `perMachine: false`** 로 변경 — 설치 위치가 `%LOCALAPPDATA%\Programs\codebridge-desktop`로 바뀌어 UAC 없이 설치/업데이트 (ChatGPT 앱과 동일한 경험). README에 SmartScreen 미서명 안내 명시.
+- v0.4.7: 기존 Program Files 설치본 제거 → 개인 설치 경로로 마이그레이션 완료.
+- v0.4.6: 채팅 메시지 로딩 `limit=200` 회귀 수정 (opencode `limit` 상한 관련).
+- **자동 업데이트 실증**: 앱 재시작만으로 v0.4.6→v0.4.9→v0.5.4→v0.5.6 연속 적용 확인. 릴리스는 `.github/workflows/release.yml`이 태그 push마다 빌드→publish, `ci.yml`은 master push/PR마다 cargo test+node --check 검증. (주의: `source-map-support@0.5.31` 타르볼이 npm registry에서 404 → 0.5.21로 repin, byte 동일 확인.)
+
+**도구 모드 (v0.5.0)**
+
+- 브릿지가 ChatGPT/Gemini 웹 답변에서 `TOOL name ...` 한 줄을 감지해 opencode가 그대로 실행할 **tool_calls로 승격** (read/glob/grep/websearch/edit/shell/question). opencode가 도구를 실제 실행하고 결과를 다시 대화에 주입하는 루프 — "ChatGPT를 백엔드로 쓰는 opencode" 가 실제 동작 (MAX_TOOL_TURNS=10).
+- 파일 신규/재작성은 기존처럼 **코드펜스+`// path:` 주석 관대 파서**가 처리.
+- `websearch` 네이티브 툴 추가, 파괴적 셸(rm -rf 등)은 자동 실행 대신 **확인 카드(CODEBRIDGE_QUESTION)**로 변환 + `app:runApprovedShell` IPC로 승인 후 실행, `BRIDGE_DEBUG_PROMPT`/`CODEBRIDGE_LOG_TOOLS` 디버그 훅.
+- flatten: assistant `tool_calls`를 `TOOL name k=v ...` KV 형식으로 렌더해 모델이 자기 이전 호출/결과를 텍스트로 인지하게 함. `TEST_COUNTER` 모듈 스코프로 병렬 테스트 race 수정.
+- opencode 기본 총 2회 호출 문제는 **`webchat-title` 가짜 모델**(제목 생성 요청에 짧은 컷)로 답변+제목 추정 루프 중복 제거.
+
+**파싱/질문 카드/실패 배너 (v0.5.1~v0.5.6, CodeRabbit 지적 모두 반영)**
+
+- `old`/`new`/`file`/`find`/`before`/`replace` 등 **별칭 KV 키** 추가 (워드 모델이 짧은 별칭을 자주 출력). `\\n` 리터럴 개행 변환. 경로 샌드박스, `END_TOOL` 블록 마커 인식 유지.
+- **도구 실패 배너**: TOOL 호출이 불완전하면 `codebridge:tool-failed:N` 마커 출력 → UI가 앰버 배너("도구 N건이 실행되지 않았습니다")로 렌더. 코드 펜스 안의 마커는 배너 아닌 텍스트로 유지.
+- **질문 카드**: `TOOL question` 단일형(flat header/question/options)도 배열형(opencode 스키마)과 동일하게 `CODEBRIDGE_QUESTION:` 마커로 변환되어 `QuestionCard.tsx` 앰버/방향 선택지 버튼 UI에 렌더. 문자열 options는 쉼표 분리 후 {label,description}으로 포장.
+- 빈 응답 "완료되었습니다." → "응답이 비어 있습니다 — 모델이 출력을 생성하지 못했습니다. 다시 시도해 주세요."
+- 병렬 통합 테스트 temp dir 고유화 (프로세스 id + 원자 카운터) — CI master 빨간 적이 v0.5.2에서 v0.5.3로 수정, 이후 **ci/release 둘 다 녹색 유지**.
+
+**검증 상태**
+
+- `cargo test --release` **43/43 green**, frontend `npm run build` OK.
+- 실제 도구 루프: `D:\코드브릿지 테스트` 샘플 프로젝트에서 "divide와 subtract 함수를 추가해줘" → `TOOL read path=src/math.ts` → 코드펜스 전체 재작성 → 파일 적용 확인 (같은 세션: TODO 찾아 고쳐줘 → `divide`/`power` 추가).
+- 설치본 v0.5.6 실행 확인: 9224/7891/9333 LISTEN, boot.log `services bridgeOk=true opencodeOk=true`.
+- **남은 미검증**: 질문 카드/위험 명령 카드가 실제로 렌더된 사례 없음(모델 의존 — 유도 여지), TOOL edit 단일 편집은 alias를 추가해도 모델이 자주 불완전하게 출력해 **코드펜스 전체 재작성 루프가 가장 안정적**.
+
+**projectDir 지정 기능 (이미 구현됨, 2026-11-12/13 점검)**
+
+- 앱 UI는 사이드바 "프로젝트 폴더 변경…" 버튼과 폴더 클릭으로 `dialog.showOpenDialog` → `settings.json`에 저장, 부팅 시 `readSettings().projectDir`을 `fs.existsSync`로 검증하고 없으면 폴더 미선택 상태(`프로젝트 폴더 선택 필요`)로 시작 + 폴더 선택 화면 표시. 브릿지는 cwd로 그 경로를 사용(`[browser] cwd=…` 로그로 확인).
+- 2026-11-12 부팅에서 `saved projectDir missing: D:\코드브릿지 테스트` 로그 → **settings.json의 한국어 경로 바이트가 손상**되어 existsSync가 false (과거 PowerShell 기본 인코딩(cp949)로 쓰인 파일을 Node가 UTF-8로 읽어 U+FFFD가 섞인 것이 원인으로 추정). 셀프힐 동작 확인: 앱이 폴더 미선택으로 뜨고, 사용자가 폴더를 다시 선택하면 `writeSettings`(UTF-8)로 덮어써서 정상화됨 (11-13 오전 settings.json은 정상 UTF-8 확인, 재부팅 후 services bridgeOk/opencodeOk).
+- **교훈**: 한국어 경로가 든 텍스트 파일은 PowerShell `Set-Content`/`Out-File`(PS5.1 기본 cp949/ASCII)로 절대 쓰지 말 것 — Node `fs.writeFileSync(..., 'utf8')` 또는 edit 도구만 사용.
