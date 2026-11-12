@@ -11,7 +11,12 @@ interface SidebarProps {
   projectDir: string | null;
   onPickProject: () => void;
   probe: HostProbe | null;
-  onShowChrome: () => void;
+  onShowChrome: () => Promise<{
+    ok: boolean;
+    action?: string;
+    pid?: number;
+    error?: string;
+  }>;
 }
 
 export default function Sidebar({
@@ -26,6 +31,7 @@ export default function Sidebar({
 }: SidebarProps) {
   const [query, setQuery] = useState('');
   const [opening, setOpening] = useState(false);
+  const [showChromeError, setShowChromeError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -129,13 +135,26 @@ export default function Sidebar({
           <button
             onClick={() => {
               setOpening(true);
-              onShowChrome();
-              window.setTimeout(() => setOpening(false), 1500);
+              setShowChromeError(null);
+              onShowChrome()
+                .then((r) => {
+                  setOpening(false);
+                  if (!r.ok) {
+                    setShowChromeError(r.error ?? '전용 Chrome을 열지 못했습니다');
+                  }
+                })
+                .catch((e: unknown) => {
+                  setOpening(false);
+                  setShowChromeError(e instanceof Error ? e.message : String(e));
+                });
             }}
             className="mt-2 w-full rounded-lg bg-amber-400 px-2 py-1.5 text-[11px] font-bold text-[#332100] transition-all hover:bg-amber-300"
           >
             {opening ? '전용 Chrome 여는 중…' : '전용 Chrome 열기'}
           </button>
+          {showChromeError && (
+            <p className="mt-1.5 text-[10px] leading-snug text-red-300">{showChromeError}</p>
+          )}
         </div>
       )}
 

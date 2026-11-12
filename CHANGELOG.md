@@ -1,5 +1,15 @@
 # 릴리즈 노트
 
+## v0.4.9 (2026-11-12)
+
+CodeRabbit 리뷰(v0.4.6 이후 누적분, 6건)를 모두 반영한 하드닝 릴리스:
+
+- **전용 Chrome 프로세스 식별 정확화**: WMI 폴백이 `chrome-profile` 부분문자열만 검사하던 것을 정확한 `--user-data-dir=...CodeBridge\chrome-profile` 경로로 일치시키고, **pid 파일/스크린샷 모두 사용 전 `chrome.exe` + 정확한 프로필 경로인지 검증** (Windows PID 재활용으로 인한 무관한 Chrome 종료 방지)
+- **`winhide.rs` 전역 상태 경주 해결**: `TARGET_PID`/`ACTION`/`DONE_COUNT` 전역 변수를 뮤텍스로 직렬화 (hide/show 동시 호출 시 핸들 콜백이 뒤섞이던 문제)
+- **`show_chrome_visible`을 hide와 동일한 `chrome_spawn_lock`으로 직렬화**하고 이중 체크 — 두 show 요청이 동시에 도착해도 Chrome 1개만 뜨고 pid 파일 갱신도 한 번만 일어남
+- `app:showChrome` 타임아웃 20s → 60s (콜드 스타트 상한 45s보다 여유 있게)
+- **사이드바 로그인 배너 실패 표시**: `showChrome()` 결과가 실패면 배너에 에러를 표시하고, 버튼 라벨을 고정 timeout이 아닌 실제 promise 완료로 관리
+
 ## v0.4.8 (2026-11-12)
 
 중요 수정/개선:

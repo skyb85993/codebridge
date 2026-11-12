@@ -173,9 +173,10 @@ export default function App() {
     [busy, projectDir, pickProject, ensureSession, loadMessages],
   );
 
-  const showChrome = useCallback(() => {
-    void window.codebridge.showChrome();
-  }, []);
+  const showChrome = useCallback(
+    () => window.codebridge.showChrome(),
+    [],
+  );
 
   const interrupt = useCallback(async () => {
     if (!activeId) return;

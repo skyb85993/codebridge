@@ -232,6 +232,9 @@ pub async fn show_chrome(
         .await
     {
         Ok(pid) => Json(json!({ "ok": true, "action": "spawned", "pid": pid })),
+        Err(e) if e.to_string().contains("이미 실행 중") => {
+            Json(json!({ "ok": true, "action": "already-running" }))
+        }
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }
 }

@@ -41,6 +41,8 @@ mod imp {
     static TARGET_PID: AtomicU32 = AtomicU32::new(0);
     static ACTION: AtomicU32 = AtomicU32::new(0); // 0=hide 1=show
     static DONE_COUNT: AtomicU32 = AtomicU32::new(0);
+    // hide/show 호출이 겹쳐도 EnumWindows 사이에 전역 상태가 바뀌지 않도록 직렬화한다
+    static RUN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     extern "system" fn enum_proc(hwnd: HWND, _lparam: isize) -> i32 {
         let mut pid: u32 = 0;
@@ -70,6 +72,7 @@ mod imp {
     }
 
     fn run(pid: u32, action: u32) -> u32 {
+        let _guard = RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         TARGET_PID.store(pid, Ordering::Relaxed);
         ACTION.store(action, Ordering::Relaxed);
         DONE_COUNT.store(0, Ordering::Relaxed);

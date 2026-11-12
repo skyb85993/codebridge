@@ -586,7 +586,15 @@ impl Engine {
     }
 
     /// pid가 알려지지 않은(예: 숨겨진) Chrome을 보이게 새로 띄울 때 사용한다.
+    /// 두 show 요청이 동시에 와도 하나의 Chrome만 띄운다 (hide와 같은 잠금 + 재확인).
     pub async fn show_chrome_visible(&self, site: Site) -> Result<u32, EngineError> {
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Err(EngineError::Connect("이미 실행 중입니다".into()));
+        }
+        let _guard = chrome_spawn_lock().await;
+        if http_ok(self.cdp_port, "/json/version").await {
+            return Err(EngineError::Connect("이미 실행 중입니다".into()));
+        }
         self.spawn_chrome(site, false).await
     }
 
