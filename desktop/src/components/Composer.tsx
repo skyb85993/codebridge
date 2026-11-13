@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, Square, Download } from 'lucide-react';
 import ModelPicker from './ModelPicker';
 import { ModelID } from '../api';
 
@@ -9,9 +9,10 @@ interface ComposerProps {
   busy: boolean;
   model: ModelID;
   onModelChange: (m: ModelID) => void;
+  onExportSession?: () => void;
 }
 
-export default function Composer({ onSend, onInterrupt, busy, model, onModelChange }: ComposerProps) {
+export default function Composer({ onSend, onInterrupt, busy, model, onModelChange, onExportSession }: ComposerProps) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -68,6 +69,17 @@ export default function Composer({ onSend, onInterrupt, busy, model, onModelChan
             rows={1}
             className="max-h-60 min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[13.5px] leading-relaxed text-text placeholder-dim outline-none"
           />
+          {onExportSession && (
+            <button
+              type="button"
+              onClick={onExportSession}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-dim transition-colors hover:bg-panel2 hover:text-text"
+              title="대화 내보내기 (.md)"
+              aria-label="대화 내보내기"
+            >
+              <Download size={15} strokeWidth={2} />
+            </button>
+          )}
           <ModelPicker value={model} onChange={onModelChange} disabled={busy} />
           {busy ? (
             <button

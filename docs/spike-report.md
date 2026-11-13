@@ -427,3 +427,21 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 
 - `node scripts/smoke-check.mjs` → **5/5 PASS** (로컬, v0.8.1 기준 인스턴스).
 - 기존 54개 브릿지 테스트 green, 프론트엔드 빌드 OK.
+
+## v0.10.0 — 창 기억/시작 시 실행/MRU/내보내기/복사 (2026-11-13)
+
+**새 기능**
+
+- **창 배치 기억**: move/resize 디바운스 저장(500ms), 앱 시작 시 settings.json의 windowBounds 복원, isMaximized 포함. 화면 이탈(해상도 변경/멀티모니터 제거) 대비: workAreaSize 기준으로 클램프.
+- **Windows 시작 시 함께 실행**: 설정 토글 → `app.setLoginItemSettings({ openAtLogin })` → HKCU Run 등록/해제. 기본값 OFF (사용자가 켜야 동작).
+- **MRU 최근 프로젝트**: pickProject/boot resolve 시 unshift + dedupe + 최대 5개. getSettings에 포함되어 UI에 표시. "전환" → `app:switchProject` → services 재시작 + 세션 목록 자동 리프레시(useEffect on projectDir). 제거는 `app:removeRecentProject`.
+- **대화 내보내기**: Composer에 다운로드 버튼 → `api.getMessages`로 전체 메시지 → 마크다운 직렬화(사용자/어시스턴트/도구 호출 주석) → `app:exportSession`(dialog.showSaveDialog .md 필터) → 토스트로 저장 경로 표시.
+- **코드 블록 복사**: `PreWithCopy` — react-markdown의 `pre` 렌더러를 교체, hover 시 버튼 표시, innerText를 clipboard에.
+
+**버그 수정 (중요한 것)**
+
+- **개발/스모크 인스턴스가 설치본과 같은 userData를 쓰며 single-instance lock에 걸려 조용히 종료되던 문제**: `main.cjs`가 무조건 `app.setPath('userData', %APPDATA%\CodeBridge)`를 실행해서 `CODEBRIDGE_USER_DATA_DIR` 격리가 먹지 않았다. 이제 env를 먼저 확인해 setPath 적용 (`CODEBRIDGE_USER_DATA_DIR=... electron .`). 스모크 게이트가 설치본 실행 중에도 5/5 PASS 확인. CI에서는 충돌이 없어서 드러나지 않았던 환경 특이 케이스.
+
+**프로세스 교훈**
+
+- lockfile 문자열 치환 실수(v0.9.0 사태)가 있어 package-lock의 모든 변경은 **diff로 검증**한다. v0.10.0 버전 범프도 diff 확인으로 3줄(2개 앱 버전)만 변경됨을 검증.

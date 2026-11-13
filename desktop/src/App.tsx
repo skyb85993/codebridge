@@ -26,6 +26,8 @@ export default function App() {
   const [probe, setProbe] = useState<HostProbe | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  const exportNoteTimer = useRef<number | undefined>(undefined);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? null,
@@ -245,6 +247,69 @@ export default function App() {
     void window.codebridge.openProjectFolder();
   }, []);
 
+  const flashNote = useCallback((msg: string) => {
+    setExportNote(msg);
+    if (exportNoteTimer.current) window.clearTimeout(exportNoteTimer.current);
+    exportNoteTimer.current = window.setTimeout(() => setExportNote(null), 4000);
+  }, []);
+
+  // 대화 내보내기 — 현재 세션을 마크다운으로 저장
+  const exportSession = useCallback(async () => {
+    if (!activeId) return;
+    try {
+      const msgs = await api.getMessages(activeId);
+      const title = activeSession?.title?.trim() || '대화';
+      const lines: string[] = [
+        `# ${title}`,
+        '',
+        `프로젝트: ${projectDir ?? ''}`,
+        `내보낸 날짜: ${new Date().toLocaleString('ko-KR')}`,
+        '',
+      ];
+      for (const m of msgs) {
+        if (m.type === 'user') {
+          lines.push('## 사용자', '', m.text ?? '', '');
+        } else if (m.type === 'assistant') {
+          lines.push('## 어시스턴트', '');
+          for (const p of m.content) {
+            if (p.type === 'text') lines.push(p.text ?? '', '');
+            else if (p.type === 'tool') lines.push(`*(도구 호출: ${p.name})*`, '');
+          }
+          lines.push('');
+        }
+      }
+      const safe =
+        title
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .replace(/\s+/g, ' ')
+          .slice(0, 60)
+          .trim() || 'conversation';
+      const res = await window.codebridge.exportSession({
+        markdown: lines.join('\n'),
+        filename: `${safe}.md`,
+      });
+      if (res.ok) flashNote(`대화를 저장했습니다 — ${res.path}`);
+      else if (!res.cancelled) flashNote(res.error ?? '저장에 실패했습니다.');
+    } catch {
+      flashNote('내보내기를 완료하지 못했습니다.');
+    }
+  }, [activeId, activeSession, projectDir, flashNote]);
+
+  // 최근 프로젝트 MRU 전환/제거
+  const switchProject = useCallback(async (dir: string) => {
+    const res = await window.codebridge.switchProject(dir);
+    if (res.ok && res.projectDir) {
+      setProjectDir(res.projectDir);
+      flashNote(`프로젝트를 전환했습니다 — ${res.projectDir}`);
+    } else {
+      flashNote(res.error ?? '전환에 실패했습니다.');
+    }
+  }, [flashNote]);
+
+  const removeRecentProject = useCallback(async (dir: string) => {
+    await window.codebridge.removeRecentProject(dir);
+  }, []);
+
   const deleteSession = useCallback(
     async (id: string) => {
       const ok = await api.deleteSession(id);
@@ -374,6 +439,8 @@ export default function App() {
             onDefaultModel={applyDefaultModel}
             onApplyModelToCurrent={applyModelToCurrent}
             canApplyModelToCurrent={!!activeId}
+            onSwitchProject={switchProject}
+            onRemoveRecentProject={removeRecentProject}
           />
         )}
       </div>
@@ -384,6 +451,11 @@ export default function App() {
     <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
       <TitleBar version={version} title={activeSession?.title ?? '새 대화'} onOpenSettings={openSettings} />
       <UpdateBanner />
+      {exportNote && (
+        <div className="pointer-events-none fixed bottom-16 left-1/2 z-40 max-w-[90%] -translate-x-1/2 truncate rounded-xl border border-cyan-400/30 bg-panel/95 px-4 py-2 text-[11px] font-medium text-cyan-100 shadow-card backdrop-blur">
+          {exportNote}
+        </div>
+      )}
       {settingsOpen && (
         <SettingsModal
           appVersion={version}
@@ -393,6 +465,8 @@ export default function App() {
           onDefaultModel={applyDefaultModel}
           onApplyModelToCurrent={applyModelToCurrent}
           canApplyModelToCurrent={!!activeId}
+          onSwitchProject={switchProject}
+          onRemoveRecentProject={removeRecentProject}
         />
       )}
       <div className="flex min-h-0 flex-1">
@@ -423,6 +497,7 @@ export default function App() {
             busy={busy}
             model={model}
             onModelChange={changeModel}
+            onExportSession={exportSession}
           />
         </main>
       </div>

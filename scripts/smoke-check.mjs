@@ -61,10 +61,13 @@ const killTree = (proc) => {
   try { proc.kill('SIGKILL'); } catch {}
 };
 
+// 설치본 앱이 살아 있을 때도 실행되도록 별도 userData 프로필로 띄운다
+// (requestSingleInstanceLock 충돌 방지 — 앱이 CODEBRIDGE_USER_DATA_DIR를 인식한다)
+const smokeProfile = path.join(ROOT, '.smoke-profile');
 const proc = spawn(ELECTRON, ['.', `--remote-debugging-port=${PORT}`], {
   cwd: DESKTOP,
   stdio: 'ignore',
-  env: { ...process.env },
+  env: { ...process.env, CODEBRIDGE_USER_DATA_DIR: smokeProfile },
 });
 
 try {
@@ -122,6 +125,11 @@ try {
   results.push({ name: 'runner', ok: false });
 } finally {
   killTree(proc);
+  try {
+    fs.rmSync(smokeProfile, { recursive: true, force: true });
+  } catch {
+    /* 정리 실패는 무시 */
+  }
 }
 
 const failed = results.filter((r) => !r.ok);

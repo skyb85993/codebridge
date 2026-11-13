@@ -1,8 +1,43 @@
-import { AlertTriangle } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { AlertTriangle, Check, Copy } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import type { ChatMessage } from '../api';
 import ToolCallChip from './ToolCallChip';
 import QuestionCard, { type QuestionMarker } from './QuestionCard';
+
+function PreWithCopy({ children }: { children?: React.ReactNode }) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    const text = preRef.current?.innerText ?? '';
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* 클립보드 불가 환경 무시 */
+    }
+  };
+  return (
+    <div className="group/pre relative">
+      <button
+        type="button"
+        onClick={copy}
+        className="absolute right-2 top-2 z-10 grid h-6 w-6 place-items-center rounded-md border border-lineSoft bg-panel/90 text-dim opacity-0 transition-all hover:text-text focus:opacity-100 focus:outline-none group-hover/pre:opacity-100"
+        title="코드 복사"
+        aria-label="코드 복사"
+      >
+        {copied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+      </button>
+      <pre
+        ref={preRef}
+        className="my-2 overflow-x-auto rounded-lg border border-lineSoft bg-[#0c1017] p-3 text-[11.5px] leading-relaxed"
+      >
+        {children}
+      </pre>
+    </div>
+  );
+}
 
 const MARKER_PREFIX = 'CODEBRIDGE_QUESTION:';
 const TOOL_FAILED_PREFIX = 'codebridge:tool-failed:';
@@ -99,9 +134,9 @@ export default function MessageRow({
                       <div
                         key={j}
                         className="prose prose-sm prose-invert max-w-none text-[13px] leading-relaxed text-text
-                          [&_pre]:my-2 [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-lineSoft [&_pre]:bg-[#0c1017] [&_code]:rounded [&_code]:bg-[#0c1017]/60 [&_code]:px-1 [&_code]:py-0.5"
+                          [&_code]:rounded [&_code]:bg-[#0c1017]/60 [&_code]:px-1 [&_code]:py-0.5"
                       >
-                        <ReactMarkdown>{seg.value ?? ''}</ReactMarkdown>
+                        <ReactMarkdown components={{ pre: PreWithCopy }}>{seg.value ?? ''}</ReactMarkdown>
                       </div>
                     ) : seg.type === 'card' ? (
                       <QuestionCard

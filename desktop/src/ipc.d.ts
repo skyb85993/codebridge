@@ -27,6 +27,8 @@ export type HostSettings = {
   chromeAlwaysVisible: boolean;
   notifyEnabled: boolean;
   hideContextNote: boolean;
+  startAtBoot: boolean;
+  recentProjects: string[];
   projectDir: string | null;
   logDir: string;
 };
@@ -50,6 +52,7 @@ export type HostSettingsPatch = Partial<
     | 'chromeAlwaysVisible'
     | 'notifyEnabled'
     | 'hideContextNote'
+    | 'startAtBoot'
   >
 >;
 
@@ -78,6 +81,9 @@ declare global {
       restartServices(): Promise<{ ok: boolean; error?: string }>;
       notify(payload: { title?: string; body?: string }): Promise<{ ok: boolean; error?: string }>;
       openProjectFolder(): Promise<{ ok: boolean; error?: string }>;
+      switchProject(dir: string): Promise<{ ok: boolean; projectDir?: string; error?: string }>;
+      removeRecentProject(dir: string): Promise<{ ok: boolean }>;
+      exportSession(payload: { markdown: string; filename?: string }): Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
     };
   }
 }

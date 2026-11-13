@@ -20,3 +20,5 @@ node_modules
 .testpages-profile/
 /desktop/ui-build/
 /desktop/ui-build/
+
+.smoke-profile/

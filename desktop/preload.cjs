@@ -62,4 +62,13 @@ contextBridge.exposeInMainWorld('codebridge', {
   openProjectFolder() {
     return ipcRenderer.invoke('app:openProjectFolder');
   },
+  switchProject(dir) {
+    return ipcRenderer.invoke('app:switchProject', dir);
+  },
+  removeRecentProject(dir) {
+    return ipcRenderer.invoke('app:removeRecentProject', dir);
+  },
+  exportSession(payload) {
+    return ipcRenderer.invoke('app:exportSession', payload);
+  },
 });

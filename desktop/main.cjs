@@ -18,6 +18,7 @@ const {
   ipcMain,
   shell,
   Notification,
+  screen,
 } = require('electron');
 let autoUpdater = null;
 try {
@@ -25,12 +26,16 @@ try {
 } catch (e) {
   console.error('[updater] require failed:', e);
 }
+// 개발/검증 환경에서 별도 userData를 쓴다 (릴리스 스모크 게이트가 설치본과 충돌하지 않도록).
+// CODEBRIDGE_USER_DATA_DIR를 주면 그 경로로, 아니면 %APPDATA%\CodeBridge.
+const ISOLATED_USER_DATA = process.env.CODEBRIDGE_USER_DATA_DIR;
+
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { spawn, spawnSync } = require('child_process');
 
-app.setPath('userData', path.join(app.getPath('appData'), 'CodeBridge'));
+app.setPath('userData', ISOLATED_USER_DATA || path.join(app.getPath('appData'), 'CodeBridge'));
 
 const IS_DEV = !app.isPackaged;
 const RES = IS_DEV ? path.join(__dirname, 'resources') : process.resourcesPath;
@@ -88,6 +93,61 @@ function writeSettings(s) {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
 }
 
+// ---------- 최근 프로젝트 (MRU, 최대 5개) ----------
+function addRecentProject(dir) {
+  try {
+    const cur = readSettings();
+    const list = Array.isArray(cur.recentProjects) ? cur.recentProjects.filter((p) => p && p !== dir && fs.existsSync(p)) : [];
+    list.unshift(dir);
+    writeSettings({ ...cur, recentProjects: list.slice(0, 5) });
+  } catch {
+    /* MRU 갱신 실패는 무시 */
+  }
+}
+
+// ---------- 창 크기/위치 기억 ----------
+let lastLayout = null;
+let boundsSaveTimer = null;
+function readWindowBounds() {
+  try {
+    const b = readSettings().windowBounds;
+    if (b && Number.isFinite(b.width) && Number.isFinite(b.height) && b.width >= 640 && b.height >= 480) {
+      return b;
+    }
+  } catch {
+    /* 무시 */
+  }
+  return null;
+}
+function saveWindowBoundsSoon() {
+  clearTimeout(boundsSaveTimer);
+  boundsSaveTimer = setTimeout(() => {
+    try {
+      if (lastLayout) writeSettings({ ...readSettings(), windowBounds: lastLayout });
+    } catch {
+      /* 무시 */
+    }
+  }, 400);
+}
+function trackWindowBounds(win) {
+  const capture = () => {
+    if (!mainWindow) return;
+    const b = mainWindow.getBounds();
+    lastLayout = { x: b.x, y: b.y, width: b.width, height: b.height, isMaximized: mainWindow.isMaximized() };
+    saveWindowBoundsSoon();
+  };
+  win.on('move', capture);
+  win.on('resize', capture);
+  win.on('close', () => {
+    clearTimeout(boundsSaveTimer);
+    try {
+      if (lastLayout) writeSettings({ ...readSettings(), windowBounds: lastLayout });
+    } catch {
+      /* 무시 */
+    }
+  });
+}
+
 // 설정 기본값 — 키가 없으면 기본값으로 병합한다.
 const SETTINGS_DEFAULTS = {
   model: 'webchat-chatgpt',      // 새 대화의 기본 모델
@@ -97,13 +157,18 @@ const SETTINGS_DEFAULTS = {
   chromeAlwaysVisible: false,    // 전용 Chrome을 항상 화면에 표시 (CODEBRIDGE_CHROME_KEEP_VISIBLE로 전달)
   notifyEnabled: true,           // 질문 카드/완료 Windows 알림
   hideContextNote: false,        // "메시지 N개 쌓였습니다" 안내 숨김 (CODEBRIDGE_NO_CONTEXT_NOTE로 전달)
+  startAtBoot: false,            // Windows 시작 시 함께 실행
+  recentProjects: [],            // 최근 프로젝트 폴더 목록 (최신순, 최대 5개)
 };
 function getSettings() {
   return { ...SETTINGS_DEFAULTS, ...readSettings() };
 }
 async function resolveProjectDir() {
   const saved = readSettings().projectDir;
-  if (saved && fs.existsSync(saved)) return saved;
+  if (saved && fs.existsSync(saved)) {
+    addRecentProject(saved);
+    return saved;
+  }
   if (saved) appendLog('boot', `[boot] saved projectDir missing: ${saved}\n`);
   return '';
 }
@@ -439,12 +504,26 @@ function buildTray() {
 
 // ---------- 창 ----------
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
+  const savedBounds = readWindowBounds();
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  let windowOpts = {
+    width: Math.min(Math.max(savedBounds?.width ?? 1280, 1000), Math.max(workAreaSize.width, 1000)),
+    height: Math.min(Math.max(savedBounds?.height ?? 840, 640), Math.max(workAreaSize.height, 640)),
     minWidth: 1000,
     minHeight: 640,
     title: 'CodeBridge',
+  };
+  if (
+    savedBounds &&
+    Number.isFinite(savedBounds.x) &&
+    Number.isFinite(savedBounds.y)
+  ) {
+    const x = Math.min(Math.max(savedBounds.x, 0), Math.max(workAreaSize.width - 200, 0));
+    const y = Math.min(Math.max(savedBounds.y, 0), Math.max(workAreaSize.height - 100, 0));
+    windowOpts = { ...windowOpts, x, y };
+  }
+  mainWindow = new BrowserWindow({
+    ...windowOpts,
     backgroundColor: '#0a0e14',
     frame: false,
     autoHideMenuBar: true,
@@ -455,6 +534,10 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
+
+  // 창 크기/위치 기억
+  trackWindowBounds(mainWindow);
+  if (savedBounds?.isMaximized) mainWindow.maximize();
 
   // 렌더러 console 메시지를 파일로 남긴다 (크래시 진단용)
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -634,6 +717,7 @@ ipcMain.handle('app:pickProject', async () => {
   if (!picked) return null;
   projectDir = picked;
   writeSettings({ ...readSettings(), projectDir });
+  addRecentProject(picked);
   appendLog('boot', `[boot] projectDir selected: ${picked}\n`);
   await startServices(projectDir);
   return picked;
@@ -656,6 +740,15 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
   if (typeof patch.chromeAlwaysVisible === 'boolean') next.chromeAlwaysVisible = patch.chromeAlwaysVisible;
   if (typeof patch.notifyEnabled === 'boolean') next.notifyEnabled = patch.notifyEnabled;
   if (typeof patch.hideContextNote === 'boolean') next.hideContextNote = patch.hideContextNote;
+  if (typeof patch.startAtBoot === 'boolean') {
+    next.startAtBoot = patch.startAtBoot;
+    try {
+      app.setLoginItemSettings({ openAtLogin: patch.startAtBoot });
+      appendLog('settings', `[settings] startAtBoot -> ${patch.startAtBoot}\n`);
+    } catch (e) {
+      appendLog('settings', `[settings] setLoginItemSettings failed: ${e}\n`);
+    }
+  }
   if (patch.projectDir != null) {
     return { ok: false, error: 'projectDir은 폴더 선택으로만 변경할 수 있습니다.' };
   }
@@ -775,6 +868,53 @@ ipcMain.handle('app:restartServices', async () => {
     return { ok };
   } catch (e) {
     appendLog('settings', `[settings] services restart failed: ${e}\n`);
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 최근 프로젝트 MRU에서 항목 제거
+ipcMain.handle('app:removeRecentProject', async (_e, dir) => {
+  const cur = Array.isArray(getSettings().recentProjects) ? getSettings().recentProjects : [];
+  writeSettings({ ...readSettings(), recentProjects: cur.filter((p) => p !== dir) });
+  return { ok: true };
+});
+
+// MRU에서 폴더를 즉시 전환 (서비스 재시작 포함)
+ipcMain.handle('app:switchProject', async (_e, dir) => {
+  if (typeof dir !== 'string' || !fs.existsSync(dir)) {
+    return { ok: false, error: '폴더를 찾을 수 없습니다.' };
+  }
+  projectDir = dir;
+  writeSettings({ ...readSettings(), projectDir });
+  addRecentProject(dir);
+  appendLog('boot', `[boot] project switched to ${dir}\n`);
+  try {
+    await startServices(dir);
+  } catch (e) {
+    appendLog('boot', `[boot] restart after switch failed: ${e}\n`);
+  }
+  return { ok: true, projectDir: dir };
+});
+
+// 대화 내보내기 — 저장 대화상자를 띄우고 마크다운으로 저장
+ipcMain.handle('app:exportSession', async (_e, payload) => {
+  try {
+    const markdown = payload && typeof payload.markdown === 'string' ? payload.markdown : '';
+    if (!markdown) return { ok: false, error: '내보낼 내용이 없습니다.' };
+    const filename =
+      payload && typeof payload.filename === 'string' && payload.filename.trim()
+        ? payload.filename.trim()
+        : 'conversation.md';
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '대화 내보내기',
+      defaultPath: filename,
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+    fs.writeFileSync(result.filePath, markdown, 'utf8');
+    appendLog('settings', `[export] wrote ${result.filePath} (${markdown.length} chars)\n`);
+    return { ok: true, path: result.filePath };
+  } catch (e) {
     return { ok: false, error: String(e) };
   }
 });

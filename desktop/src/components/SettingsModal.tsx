@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   X,
   FolderOpen,
+  Folder,
   Bot,
   ShieldCheck,
   ShieldAlert,
@@ -24,6 +25,8 @@ interface SettingsModalProps {
   onDefaultModel: (m: ModelID) => void;
   onApplyModelToCurrent?: (m: ModelID) => void;
   canApplyModelToCurrent?: boolean;
+  onSwitchProject?: (dir: string) => void;
+  onRemoveRecentProject?: (dir: string) => void;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -81,6 +84,8 @@ export default function SettingsModal({
   onDefaultModel,
   onApplyModelToCurrent,
   canApplyModelToCurrent,
+  onSwitchProject,
+  onRemoveRecentProject,
 }: SettingsModalProps) {
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -278,6 +283,56 @@ export default function SettingsModal({
               />
             </Section>
 
+            {/* 최근 프로젝트 */}
+            <Section title="최근 프로젝트">
+              {settings.recentProjects.length === 0 ? (
+                <p className="py-1 text-[10.5px] text-dim">
+                  아직 없습니다. 폴더를 선택한 뒤에 여기에 쌓입니다.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {settings.recentProjects.map((dir) => {
+                    const isCurrent = dir === projectDir;
+                    const name = dir.split('\\').pop() || dir;
+                    return (
+                      <div
+                        key={dir}
+                        className="flex items-center gap-2 rounded-lg border border-lineSoft bg-panel2 px-2 py-1.5"
+                        title={dir}
+                      >
+                        <Folder size={12} className="shrink-0 text-dim" />
+                        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-text">
+                          {name}
+                        </span>
+                        {isCurrent ? (
+                          <span className="shrink-0 rounded-md bg-emerald-400/15 px-2 py-0.5 text-[9.5px] font-bold text-emerald-300">
+                            현재
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => onSwitchProject?.(dir)}
+                              className="shrink-0 rounded-md border border-lineSoft bg-panel3 px-2 py-0.5 text-[10px] font-medium text-text transition-colors hover:border-line"
+                            >
+                              전환
+                            </button>
+                            <button
+                              onClick={() => onRemoveRecentProject?.(dir)}
+                              aria-label="목록에서 제거"
+                              title="목록에서 제거"
+                              className="shrink-0 text-dim transition-colors hover:text-red-300"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Section>
+
             {/* AI */}
             <Section title="AI">
               <Row
@@ -425,6 +480,26 @@ export default function SettingsModal({
               />
             </Section>
 
+            {/* 시작 */}
+            <Section title="시작">
+              <Row
+                label="Windows 시작 시 함께 실행"
+                desc="컴퓨터를 켤 때 CodeBridge가 자동으로 실행됩니다"
+                control={
+                  <Toggle
+                    on={settings.startAtBoot}
+                    onChange={(v) =>
+                      patch(
+                        { startAtBoot: v },
+                        v ? '시작 시 자동 실행됩니다.' : '시작 시 자동 실행을 해제했습니다.',
+                      )
+                    }
+                    disabled={busy === 'save'}
+                  />
+                }
+              />
+            </Section>
+
             {/* 전용 Chrome */}
             <Section title="전용 Chrome (로그인)">
               <Row
@@ -521,6 +596,18 @@ export default function SettingsModal({
               <p className="mt-1.5 text-[9.5px] leading-snug text-dim/70">
                 처음 실행 시 SmartScreen 경고가 뜰 수 있습니다 — "추가 정보 → 실행"을 선택하세요.
               </p>
+            </Section>
+
+            {/* 도움말 */}
+            <Section title="도움말">
+              <ul className="flex flex-col gap-1.5 text-[10.5px] leading-snug text-dim">
+                <li>· 에이전트에게 파일 수정을 시키려면: "TODO 하나 찾아서 고쳐줘"</li>
+                <li>· 더 나은 질문이 필요하면 질문 카드가 뜹니다 — 선택지를 고르면 계속 진행합니다</li>
+                <li>· 되돌릴 수 없는 삭제/포맷 명령은 확인 카드를 거칩니다 (끌 수 없음)</li>
+                <li>· 긴 대화는 "지금 인수인계"로 새 웹 채팅으로 옮길 수 있습니다</li>
+                <li>· 파일은 프로젝트 폴더에 바로 작성됩니다 — 직접 열어서 확인하세요</li>
+                <li>· 문제가 생기면 "진단 → 로그 폴더 열기"에서 boot.log / bridge.log를 확인하세요</li>
+              </ul>
             </Section>
 
             {note && (
