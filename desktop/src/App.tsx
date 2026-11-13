@@ -274,14 +274,6 @@ export default function App() {
     }
   }, [activeId, loadMessages]);
 
-  // 설정 화면의 "현재 대화에도 적용" — 진행 중인 세션의 모델도 바꾼다
-  const applyModelToCurrent = useCallback(
-    (m: ModelID) => {
-      void changeModel(m);
-    },
-    [changeModel],
-  );
-
   const changeModel = useCallback(
     async (m: ModelID) => {
       setModel(m);
@@ -294,6 +286,14 @@ export default function App() {
       }
     },
     [activeId],
+  );
+
+  // 설정 화면의 "현재 대화에도 적용" — 진행 중인 세션의 모델도 바꾼다
+  const applyModelToCurrent = useCallback(
+    (m: ModelID) => {
+      void changeModel(m);
+    },
+    [changeModel],
   );
 
   // ---------- 첫 실행: 폴더 선택 강제 ----------

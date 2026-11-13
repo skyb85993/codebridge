@@ -401,3 +401,9 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 
 - "오픈코드 창이 자꾸 꺼지더라" — 원인은 **에이전트(본인)가 개발 검증마다 `Get-Process | ? ProcessName -eq 'opencode' | Stop-Process`로 시스템 전체의 opencode 프로세스를 강제 종료**한 것 (오늘만 boots 96회). 코드브릿지 증거상 앱 자발적 종료 로그는 없음. 이후: 경로 기반 선별 kill만 사용, 앱 강제 종료 없음, 실검증은 CI + 마지막 1회 재시작.
 - CI testpages-check red run (docs 커밋) — `gh run rerun --failed` 트리거.
+
+**v0.8.0 사후 사고 + v0.8.1**
+
+- v0.8.0 배포 직후 사용자가 "문제가 발생했습니다" 오류 화면 목격 — 원인은 `applyModelToCurrent` useCallback이 `changeModel`보다 먼저 선언되어 deps 배열 평가 시 **TDZ ReferenceError** (매 렌더 크래시). esbuild는 이 에러를 잡지 못하고, 새 코드라 런타임 확인 없이 배포된 것이 원인.
+- 수정: 선언 순서 교정 + 배포 전 dev 인스턴스+CDP로 실기기 렌더 확인 후 v0.8.1 릴리스.
+- **프로세스 교훈**: 새 React 경로를 추가한 릴리스는 반드시 CDP로 실제 렌더 1회 확인하고 릴리스한다. "CI green + 코드 리뷰"만으로는 TDZ/로직 런타임 오류를 못 잡는다.
