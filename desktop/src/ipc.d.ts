@@ -19,6 +19,14 @@ export type HostProbe = {
   sites: HostSiteStatus[];
 };
 export type HostBoot = { projectDir: string | null; appVersion: string };
+export type HostSettings = {
+  model: 'webchat-chatgpt' | 'webchat-gemini';
+  autoCheckUpdates: boolean;
+  dangerConfirm: boolean;
+  handoverLimit: number;
+  projectDir: string | null;
+  logDir: string;
+};
 export type HostMode = 'app:ready';
 export type UpdateState =
   | 'idle'
@@ -28,6 +36,8 @@ export type UpdateState =
   | 'up-to-date'
   | 'error';
 export type HostUpdateState = { state: UpdateState; version: string | null; appVersion: string };
+
+export type HostSettingsPatch = Partial<Pick<HostSettings, 'model' | 'autoCheckUpdates' | 'dangerConfirm' | 'handoverLimit'>>;
 
 declare global {
   interface Window {
@@ -42,8 +52,15 @@ declare global {
       windowAction(action: 'minimize' | 'toggle-maximize' | 'close'): void;
       showChrome(): Promise<{ ok: boolean; action?: string; pid?: number; error?: string }>;
       runApprovedShell(command: string): Promise<{ ok: boolean; output?: string; error?: string }>;
-      getUpdateState(): Promise<UpdateState>;
-      quitAndInstall(): Promise<void>;
+      getUpdateState(): Promise<HostUpdateState>;
+      quitAndInstall(): Promise<{ ok: boolean; message?: string }>;
+      getSettings(): Promise<HostSettings>;
+      setSettings(patch: HostSettingsPatch): Promise<{ ok: boolean; settings?: HostSettings; error?: string }>;
+      openLogsFolder(): Promise<{ ok: boolean; error?: string }>;
+      openReleasesPage(): Promise<{ ok: boolean; error?: string }>;
+      checkUpdates(): Promise<{ ok: boolean; state?: UpdateState; version?: string | null; error?: string }>;
+      resetChromeProfile(): Promise<{ ok: boolean; backup?: string | null; error?: string }>;
+      restartBridge(): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }

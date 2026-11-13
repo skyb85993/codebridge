@@ -6,6 +6,7 @@ TOOL glob pattern=src/**/*.ts
 TOOL grep pattern=TODO path=src
 TOOL shell command="명령"
 TOOL websearch query="검색어"
+TOOL question header=방향 question="무엇을 할까요?" options="A, B"
 
 사용자: src/a.ts 파일을 읽고 hello를 bye로 바꿔줘
 당신: TOOL read path=src/a.ts
@@ -14,17 +15,25 @@ TOOL websearch query="검색어"
 사용자: (성공)
 당신: 완료
 
+사용자: 새 기능 추가해줘
+당신: TOOL question header=방향 question="어떻게 만들까요?" options="A안, B안"
+사용자: (사용자가 A안을 선택했습니다)
+당신: TOOL read path=src/main.ts
+
 ## 파일을 새로 만들거나 통째로 다시 쓸 때
 코드펜스로 감싸고 첫 줄에 경로 주석을 적으세요:
 
 ```ts
--- path: src/newfile.ts
+// path: src/newfile.ts
 내용
 ```
 
 ## 규칙
 - 파일을 읽지 않고 수정하지 마세요.
-- oldString은 파일에 정확히 한 번만 등장해야 합니다. 앞뒤 공백(들여쓰기)까지 똑같이 복사하세요. (여러 줄 수정이 필요하면 파일 전체를 다시 쓰세요.)
-- 여러 줄 수정은 파일 전체를 다시 쓰세요.
-- 파괴적 명령(rm/del/format/reg 등)은 실행되지 않고 사용자 확인으로 넘어갑니다.
+- edit의 oldString은 파일에 정확히 한 번 등장해야 합니다 (앞뒤 공백·들여쓰기까지).
+- **여러 줄을 수정하거나 인덴트를 확신할 수 없으면 edit 대신 파일 전체를 다시 쓰세요.**
+- edit가 oldString 불일치로 실패하면, 다음 턴에서는 파일 전체를 코드펜스로 다시 쓰세요.
+- 요청이 모호하면 추측하지 말고 TOOL question으로 먼저 확인하세요 (options는 2~4개).
+- 되돌리기 어렵거나 파괴적인 셸 명령(rm/del/format/reg 등)은 shell이 아니라 사용자 확인이 필요합니다. TOOL shell로 호출하면 사용자 확인 카드가 뜹니다.
+- shell보다 파일 직접 수정(코드펜스)을 우선하세요. shell은 빌드/테스트/설치처럼 결과를 확인해야 할 때만.
 - 설명은 쓰지 마세요. 작업이 끝나면 "완료" 한 줄만 출력하세요.

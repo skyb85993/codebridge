@@ -339,3 +339,27 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - 앱 UI는 사이드바 "프로젝트 폴더 변경…" 버튼과 폴더 클릭으로 `dialog.showOpenDialog` → `settings.json`에 저장, 부팅 시 `readSettings().projectDir`을 `fs.existsSync`로 검증하고 없으면 폴더 미선택 상태(`프로젝트 폴더 선택 필요`)로 시작 + 폴더 선택 화면 표시. 브릿지는 cwd로 그 경로를 사용(`[browser] cwd=…` 로그로 확인).
 - 2026-11-12 부팅에서 `saved projectDir missing: D:\코드브릿지 테스트` 로그 → **settings.json의 한국어 경로 바이트가 손상**되어 existsSync가 false (과거 PowerShell 기본 인코딩(cp949)로 쓰인 파일을 Node가 UTF-8로 읽어 U+FFFD가 섞인 것이 원인으로 추정). 셀프힐 동작 확인: 앱이 폴더 미선택으로 뜨고, 사용자가 폴더를 다시 선택하면 `writeSettings`(UTF-8)로 덮어써서 정상화됨 (11-13 오전 settings.json은 정상 UTF-8 확인, 재부팅 후 services bridgeOk/opencodeOk).
 - **교훈**: 한국어 경로가 든 텍스트 파일은 PowerShell `Set-Content`/`Out-File`(PS5.1 기본 cp949/ASCII)로 절대 쓰지 말 것 — Node `fs.writeFileSync(..., 'utf8')` 또는 edit 도구만 사용.
+
+## v0.6.0 — 설정 화면 + 실전 검증 (2026-11-13)
+
+**설정(Settings) 기능 신설**
+
+- 타이틀바 톱니바퀴 → 모달(`SettingsModal.tsx`): 프로젝트 변경 / 기본 모델 / 위험 명령 확인 / 인수인계 한도(10·25·50) / 자동 업데이트 확인 / 전용 Chrome(보이기·로그인 재확인·프로필 초기화) / 로그 폴더 열기·브릿지 재시작 / 릴리스 페이지 / SmartScreen 안내.
+- `settings.json` 스키마: `model`, `autoCheckUpdates`, `dangerConfirm`, `handoverLimit` (기본값 병합). 쓰기는 앱의 `fs.writeFileSync`(UTF-8) — 한국어 경로 손상 없음 확인.
+- 브릿지 연동: `CODEBRIDGE_DANGER_CONFIRM`(0=카드 없이 실행), `CODEBRIDGE_HANDOVER_LIMIT`(config.toml보다 우선)를 spawn 시 env로 전달. 값 변경 시 브릿지만 자동 재시작(opencode 유지), `settings.log`에 기록.
+- E2E(CDP): 모달 렌더 확인(토글/버튼/경고 배너), dangerConfirm ON→OFF→ON 전환과 브릿지 재시작 로그 확인, `settings.json` 즉시 반영 확인.
+
+**남은 문제 해결 — 실전 검증(CDP + 전용 Chrome)**
+
+- **질문 카드 실제 렌더 확인**: dev 인스턴스→ChatGPT에 "TOOL question으로 먼저 물어봐" 요청 → 응답 `TOOL question header=방향 question="무엇을 추가할까요?" options="divide, power"` → 브릿지가 `CODEBRIDGE_QUESTION:` 마커로 변환 → UI QuestionCard(방향 / 무엇을 추가할까요? / divide·power 버튼) 렌더. (이전엔 한 번도 못 본 경로)
+- **위험 명령**: ChatGPT는 파괴적 `TOOL shell`을 스스로는 절대 내지 않고 `TOOL question`("실행할까요?")으로 되묻는 것을 2회 확인. 즉 실사용에서 삭제 확인은 주로 question 카드로 도달하고, `danger_shell` 변환은 파서 단위 테스트·자동 차단 게이트로만 유지. `runApprovedShell` IPC는 `Write-Output cb-ipc-ok` → `{"ok":true,"output":"cb-ipc-ok"}`로 검증.
+- **KV 파서 버그 수정**: `question=텍스트 공백 포함`처럼 따옴표 없는 값의 공백에서 잘라내던 문제 → 공백에서 잘라낼지 여부를 "다음 토큰이 `key=` 형태인가"로 판정하도록 `split_kv` 재작성 (`looks_like_kv_start`). 테스트 3개 추가 (question 무인용 공백값/멀티스페이스 path/실제 키 분리 유지).
+- **edit oldString 정규화**: 브릿지가 edit 승격 시 파일을 읽어, oldString이 그대로 있지 않고 줄 trim 비교 **정확히 1곳** 일치하면 실제 텍스트(CRLF 포함)로 치환. 0곳/2곳 이상이면 추측하지 않고 원본 유지. 단위 테스트 8개 (정확일치·인덴트 복원·CRLF·모호·파일없음·경로탈출·승격 E2E). test fixture는 매번 원자 카운터로 고유 디렉터리 — `TEST_COUNTER` 모듈 스코프 유지.
+- 프롬프트(`fence_convention.md`) 강화: 모호하면 question 먼저, 여러 줄/인덴트 불확실하면 전체 재작성 우선, edit 실패 시 다음 턴 전체 재작성.
+- 테스트 54개 green (기존 43 + 파서 3 + 정규화 8).
+
+**릴리스 검증**
+
+- `cargo test --release` 54/54, frontend build OK, settings 토글·로그·IPC E2E 통과.
+- CI/release 녹색 유지 시 v0.6.0을 latest로 설치 교체.
+- 테스트 세션 4건(검증용) 정리 완료. 사용자 환경의 이전 테스트 대화 일부는 보존됨.

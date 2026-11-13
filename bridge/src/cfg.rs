@@ -79,6 +79,13 @@ impl Config {
         if cfg.handover.order.is_empty() {
             cfg.handover.order = vec!["same_site_new_chat".into(), "gemini".into()];
         }
+        // 앱(main.cjs)의 settings.handoverLimit → CODEBRIDGE_HANDOVER_LIMIT로 전달됨. 있으면 우선.
+        if let Ok(v) = std::env::var("CODEBRIDGE_HANDOVER_LIMIT") {
+            match v.trim().parse::<u32>() {
+                Ok(n) if n >= 1 => cfg.handover.thread_soft_limit = n,
+                _ => println!("[cfg] CODEBRIDGE_HANDOVER_LIMIT={v:?} 무시 (1 이상 정수만 허용)"),
+            }
+        }
         cfg
     }
 }

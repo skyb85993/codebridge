@@ -680,7 +680,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     let tool_promo = if truncated {
         translate::lenient::ToolPromotion::default()
     } else {
-        translate::lenient::extract_tool_calls(&raw)
+        translate::lenient::extract_tool_calls_in(&raw, Some(workspace.as_path()))
     };
     let mut calls = write_calls;
     calls.extend(tool_promo.calls);

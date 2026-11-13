@@ -1,5 +1,23 @@
 # 릴리즈 노트
 
+## v0.6.0 (2026-11-13)
+
+설정 화면 + 남은 문제 해결 릴리스:
+
+**설정 (타이틀바 톱니바퀴 → 모달)**
+- 새 대화의 기본 모델 (ChatGPT/Gemini), 위험 명령 확인 토글(기본 ON, OFF 시 앰버 경고), 인수인계 스레드 한도 10/25/50(브릿지에 `CODEBRIDGE_HANDOVER_LIMIT` env로 전달), 자동 업데이트 확인 토글 + 수동 "지금 업데이트 확인", 전용 Chrome 보이기/로그인 재확인/프로필 초기화(백업으로 이동), 로그 폴더 열기, 브릿지 재시작, 릴리스 페이지, 버전/SmartScreen 안내
+- 설정은 `settings.json`(UTF-8)에 저장, 위험 명령/인수인계 변경 시 브릿지만 자동 재시작 (opencode 유지). `settings.json`은 한국어 경로도 정상 저장 확인
+
+**남은 문제 해결**
+- **질문 카드 실전 검증 완료** — CDP로 ChatGPT에 강제 유도 요청 → `TOOL question` → `CODEBRIDGE_QUESTION:` 마커 → QuestionCard 렌더 확인 (divide/power 선택지)
+- **위험 명령 확인 실전 검증** — ChatGPT는 파괴적 `TOOL shell`을 스스로 내지 않고 `TOOL question`("실행할까요?")으로 먼저 물어보는 것을 확인. 파서의 `danger_shell` 변환 경로는 단위 테스트로 유지
+- **`TOOL question` 값에 공백+따옴표 없는 경우**: KV splitter가 다음 토큰이 `key=` 형태일 때만 자르도록 수정 — `question=무엇을 추가할까요`처럼 공백 든 값도 보존됨
+- **edit oldString 정규화**: 파일을 읽어 oldString이 파일에 그대로 있지 않으면 줄 단위 trim 비교로 **정확히 1곳**만 일치할 때 실제 텍스트로 치환 (CRLF 보존, 모호하면 추측 안 함) — 모델이 인덴트를 틀려도 edit 승격 성공
+- `fence_convention.md` 강화: 모호하면 question 먼저, 여러 줄 수정은 전체 재작성, edit 실패 시 다음 턴 전체 재작성, 되돌리기 어려운 명령은 shell 확인 카드
+- `CODEBRIDGE_DANGER_CONFIRM=0`이면 브릿지가 파괴적 명령을 확인 카드 없이 그대로 실행 (설정 토글과 연동)
+
+**검증**: cargo test 54개 green, frontend build OK, E2E(CDP)로 설정 모달 토글·로그 파일 기록·질문 카드·runApprovedShell IPC(`Write-Output` → `{"ok":true,"output":"cb-ipc-ok"}`) 확인
+
 ## v0.5.6 (2026-11-12)
 
 CodeRabbit 리뷰 지적 모두 수정:

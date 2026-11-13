@@ -1,12 +1,13 @@
-import { Minus, Square, X } from 'lucide-react';
+import { Minus, Square, X, Settings } from 'lucide-react';
 import icon from '../../build/icon.png';
 
 interface TitleBarProps {
   version: string;
   title: string;
+  onOpenSettings?: () => void;
 }
 
-export default function TitleBar({ version, title }: TitleBarProps) {
+export default function TitleBar({ version, title, onOpenSettings }: TitleBarProps) {
   return (
     <header className="drag-region flex h-11 shrink-0 items-center justify-between border-b border-lineSoft bg-panel/80 pl-3 pr-1 backdrop-blur-xl">
       <div className="flex min-w-0 items-center gap-2.5">
@@ -22,6 +23,16 @@ export default function TitleBar({ version, title }: TitleBarProps) {
       </div>
 
       <div className="no-drag flex h-full items-stretch">
+        {onOpenSettings && (
+          <button
+            className="grid h-full w-11 place-items-center text-dim transition-colors hover:bg-panel2 hover:text-text"
+            aria-label="설정"
+            title="설정"
+            onClick={onOpenSettings}
+          >
+            <Settings size={15} strokeWidth={2} />
+          </button>
+        )}
         <button
           className="grid h-full w-11 place-items-center text-dim transition-colors hover:bg-panel2 hover:text-text"
           aria-label="최소화"

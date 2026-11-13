@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import MessageList from './components/MessageList';
 import Composer from './components/Composer';
 import UpdateBanner from './components/UpdateBanner';
+import SettingsModal from './components/SettingsModal';
 import { api, ChatMessage, ModelID, SessionInfo } from './api';
 import type { HostProbe } from './ipc';
 import brandIcon from '../build/icon.png';
@@ -24,6 +25,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<HostProbe | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? null,
@@ -38,7 +40,18 @@ export default function App() {
       setVersion(boot.appVersion);
       setProjectDir(boot.projectDir);
     });
+    // 새 대화의 기본 모델을 settings에서 읽어 반영
+    window.codebridge
+      .getSettings()
+      .then((s) => setModel(s.model))
+      .catch(() => {
+        /* 기본값 유지 */
+      });
   }, []);
+
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const applyDefaultModel = useCallback((m: ModelID) => setModel(m), []);
 
   // ---------- 프로젝트 없으면 전체 화면 폴더 선택 ----------
   const pickProject = useCallback(async () => {
@@ -226,7 +239,7 @@ export default function App() {
   if (!projectDir) {
     return (
       <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
-        <TitleBar version={version} title="CodeBridge" />
+        <TitleBar version={version} title="CodeBridge" onOpenSettings={openSettings} />
         <div className="pointer-events-none absolute -left-40 top-1/4 h-96 w-96 rounded-full bg-cyan-400/10 blur-3xl" />
         <div className="pointer-events-none absolute -right-40 bottom-1/4 h-96 w-96 rounded-full bg-emerald-400/10 blur-3xl" />
         <div className="relative flex flex-1 items-center justify-center">
@@ -274,14 +287,32 @@ export default function App() {
             </p>
           </div>
         </div>
+        {settingsOpen && (
+          <SettingsModal
+            appVersion={version}
+            projectDir={projectDir}
+            onClose={closeSettings}
+            onPickProject={pickProject}
+            onDefaultModel={applyDefaultModel}
+          />
+        )}
       </div>
     );
   }
 
   return (
     <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
-      <TitleBar version={version} title={activeSession?.title ?? '새 대화'} />
+      <TitleBar version={version} title={activeSession?.title ?? '새 대화'} onOpenSettings={openSettings} />
       <UpdateBanner />
+      {settingsOpen && (
+        <SettingsModal
+          appVersion={version}
+          projectDir={projectDir}
+          onClose={closeSettings}
+          onPickProject={pickProject}
+          onDefaultModel={applyDefaultModel}
+        />
+      )}
       <div className="flex min-h-0 flex-1">
         {sidebarOpen && (
           <Sidebar

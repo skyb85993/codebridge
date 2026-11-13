@@ -1,5 +1,5 @@
 /**
- * CodeBridge Desktop — Electron main process (v0.4.x)
+ * CodeBridge Desktop — Electron main process (v0.6.x)
  *
  * 역할:
  *   1) 창(프레임리스) + 트레이 최소 구성 (프로젝트 폴더 변경 / 지금 인수인계 / 업데이트 확인 / 종료)
@@ -16,6 +16,7 @@ const {
   dialog,
   nativeImage,
   ipcMain,
+  shell,
 } = require('electron');
 let autoUpdater = null;
 try {
@@ -85,6 +86,17 @@ function writeSettings(s) {
   ensureDir(DATA_DIR);
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
 }
+
+// 설정 기본값 — 키가 없으면 기본값으로 병합한다.
+const SETTINGS_DEFAULTS = {
+  model: 'webchat-chatgpt',      // 새 대화의 기본 모델
+  autoCheckUpdates: true,        // 실행 시 자동 업데이트 확인
+  dangerConfirm: true,           // 위험 명령 확인 카드 (브릿지에 CODEBRIDGE_DANGER_CONFIRM로 전달)
+  handoverLimit: 25,             // 인수인계 소프트 리밋 (브릿지에 CODEBRIDGE_HANDOVER_LIMIT로 전달)
+};
+function getSettings() {
+  return { ...SETTINGS_DEFAULTS, ...readSettings() };
+}
 async function resolveProjectDir() {
   const saved = readSettings().projectDir;
   if (saved && fs.existsSync(saved)) return saved;
@@ -126,7 +138,7 @@ function pickProjectFolder() {
   return dialog
     .showOpenDialog(mainWindow, {
       title: 'CodeBridge — 프로젝트 폴더 선택',
-      message: '로블록스 프로젝트의 루트 폴더를 선택하세요',
+      message: '작업할 프로젝트의 루트 폴더를 선택하세요',
       properties: ['openDirectory', 'createDirectory'],
     })
     .then((r) => (r.canceled || !r.filePaths.length ? null : r.filePaths[0]));
@@ -147,10 +159,13 @@ function spawnBridge(cwd) {
   if (bridgeProc) killChild(bridgeProc);
   rotateLargeLog('bridge.log');
   const { stream } = logStream('bridge');
+  const settings = getSettings();
   const env = {
     ...process.env,
     CODEBRIDGE_CONFIG: BRIDGE_CONFIG,
     CODEBRIDGE_CHROME_PROFILE: CHROME_PROFILE,
+    CODEBRIDGE_DANGER_CONFIRM: settings.dangerConfirm ? '1' : '0',
+    CODEBRIDGE_HANDOVER_LIMIT: String(settings.handoverLimit),
   };
   bridgeProc = spawn(BRIDGE_EXE, [], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   bridgeProc.stdout.pipe(stream);
@@ -327,9 +342,13 @@ function setupAutoUpdate() {
       appendLog('updater', `[updater] error: ${err && err.message ? err.message : err}\n`);
     });
 
-    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
-      appendLog('updater', `[updater] check failed: ${e}\n`);
-    });
+    if (getSettings().autoCheckUpdates) {
+      autoUpdater.checkForUpdatesAndNotify().catch((e) => {
+        appendLog('updater', `[updater] check failed: ${e}\n`);
+      });
+    } else {
+      appendLog('updater', '[updater] auto-check disabled in settings (manual check still works)\n');
+    }
   } catch (e) {
     appendLog('updater', `[updater] setup failed: ${e}\n`);
   }
@@ -601,6 +620,92 @@ ipcMain.handle('app:pickProject', async () => {
   appendLog('boot', `[boot] projectDir selected: ${picked}\n`);
   await startServices(projectDir);
   return picked;
+});
+
+// ---------- 설정(IPC) ----------
+ipcMain.handle('app:getSettings', () => ({ ...getSettings(), logDir: LOG_DIR }));
+
+ipcMain.handle('app:setSettings', async (_e, patch) => {
+  if (!patch || typeof patch !== 'object') return { ok: false, error: '잘못된 요청입니다.' };
+  const cur = getSettings();
+  const next = { ...cur };
+  if (patch.model === 'webchat-chatgpt' || patch.model === 'webchat-gemini') next.model = patch.model;
+  if (typeof patch.autoCheckUpdates === 'boolean') next.autoCheckUpdates = patch.autoCheckUpdates;
+  if (typeof patch.dangerConfirm === 'boolean') next.dangerConfirm = patch.dangerConfirm;
+  if (patch.handoverLimit != null) {
+    const n = Number(patch.handoverLimit);
+    if (Number.isInteger(n) && [10, 25, 50].includes(n)) next.handoverLimit = n;
+  }
+  if (patch.projectDir != null) {
+    return { ok: false, error: 'projectDir은 폴더 선택으로만 변경할 수 있습니다.' };
+  }
+  writeSettings(next);
+  // 브릿지 env가 필요한 값은 브릿지만 즉시 재시작 (opencode/세션은 유지)
+  const bridgeAffected = cur.dangerConfirm !== next.dangerConfirm || cur.handoverLimit !== next.handoverLimit;
+  if (bridgeAffected && projectDir) {
+    appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit})\n`);
+    spawnBridge(projectDir);
+  }
+  return { ok: true, settings: next };
+});
+
+ipcMain.handle('app:openLogsFolder', async () => {
+  try {
+    ensureDir(LOG_DIR);
+    const err = await shell.openPath(LOG_DIR);
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('app:openReleasesPage', async () => {
+  try {
+    await shell.openExternal('https://github.com/skyb85993/codebridge/releases');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 수동 업데이트 확인 — 완료 여부는 app:getUpdateState를 폴링해 알린다.
+ipcMain.handle('app:checkUpdates', async () => {
+  if (!autoUpdater) return { ok: false, error: '업데이터가 이 빌드에서 비활성화되어 있습니다.' };
+  try {
+    updateState = 'checking';
+    await autoUpdater.checkForUpdates();
+    return { ok: true, state: updateState, version: updateVersion };
+  } catch (e) {
+    updateState = 'error';
+    appendLog('updater', `[updater] manual check failed: ${e && e.message ? e.message : e}\n`);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+// 전용 Chrome 종료 + 프로필 폴더를 .bak으로 옮겨 초기화 (다음 요청부터 재로그인 필요).
+ipcMain.handle('app:resetChromeProfile', async () => {
+  try {
+    killDedicatedChrome();
+    const bak = `${CHROME_PROFILE}.bak-${Date.now()}`;
+    if (fs.existsSync(CHROME_PROFILE)) {
+      fs.renameSync(CHROME_PROFILE, bak);
+      appendLog('settings', `[settings] chrome-profile reset -> moved to ${path.basename(bak)}\n`);
+    } else {
+      appendLog('settings', '[settings] chrome-profile reset (profile folder did not exist)\n');
+    }
+    if (projectDir) spawnBridge(projectDir);
+    return { ok: true, backup: fs.existsSync(bak) ? bak : null };
+  } catch (e) {
+    appendLog('settings', `[settings] chrome-profile reset failed: ${e && e.message ? e.message : e}\n`);
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+// 브릿지만 재시작 (설정 env 반영, opencode 유지)
+ipcMain.handle('app:restartBridge', async () => {
+  if (!projectDir) return { ok: false, error: '프로젝트 폴더가 선택되지 않았습니다.' };
+  spawnBridge(projectDir);
+  return { ok: true };
 });
 
 function ocFetchJson(pathname, init) {

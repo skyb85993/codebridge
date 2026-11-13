@@ -9,6 +9,7 @@
 //!   - 절대경로/드라이브문자/`..` 거부 (워크스페이스 샌드박스 정책)
 
 use serde_json::{json, Value};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct ParsedFile {
@@ -322,6 +323,12 @@ enum ToolBlock {
 
 /// raw innerText에서 TOOL 라인을 찾아 tool_calls로 승격한다.
 pub fn extract_tool_calls(raw: &str) -> ToolPromotion {
+    extract_tool_calls_in(raw, None)
+}
+
+/// cwd를 알면 edit의 oldString을 파일의 실제 텍스트로 자동 정규화한다.
+/// (모델이 인덴트/개행을 살짝 틀려도 "정확히 1곳"이면 고쳐서 승격)
+pub fn extract_tool_calls_in(raw: &str, cwd: Option<&Path>) -> ToolPromotion {
     let mut out = ToolPromotion::default();
     let mut call_idx = 1usize;
     let lines: Vec<&str> = raw.lines().collect();
@@ -361,7 +368,7 @@ pub fn extract_tool_calls(raw: &str) -> ToolPromotion {
             body.trim().to_string()
         };
 
-        match classify_tool_call(&name, &body, &mut call_idx) {
+        match classify_tool_call(&name, &body, &mut call_idx, cwd) {
             ToolBlock::Call(v) => out.calls.push(v),
             ToolBlock::QuestionMarker(line) => out.question_lines.push(line),
             ToolBlock::Skip(reason) => out.issues.push(format!("{name}: {reason}")),
@@ -372,7 +379,7 @@ pub fn extract_tool_calls(raw: &str) -> ToolPromotion {
 }
 
 /// TOOL 블록 본문(JSON)을 파싱하고, 이름과 맞춰 opencode call을 만든다.
-fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock {
+fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize, cwd: Option<&Path>) -> ToolBlock {
     let v: Value = match parse_tool_body(body) {
         Ok(v) => v,
         Err(e) => return ToolBlock::Skip(format!("본문 파싱 실패: {e}")),
@@ -450,6 +457,9 @@ fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock
             ) else {
                 return ToolBlock::Skip("path/oldString/newString 중 하나 없음 또는 path 거부".into());
             };
+            // cwd를 알면 파일을 읽어 oldString을 실제 텍스트로 정규화 (정확히 1곳일 때만).
+            // 모델이 인덴트를 살짝 틀려도 승격에 성공하도록.
+            let old = cwd.and_then(|root| normalize_old_string(root, &path, &old)).unwrap_or(old);
             let mut args = serde_json::Map::new();
             args.insert("path".into(), Value::String(path));
             args.insert("oldString".into(), Value::String(old));
@@ -474,7 +484,8 @@ fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock
             let Some(command) = arg_str_any(&v, &["command", "cmd", "run", "script", "exe"]) else {
                 return ToolBlock::Skip("command 없음".into());
             };
-            if is_destructive_command(&command) {
+            // CODEBRIDGE_DANGER_CONFIRM=0 (settings: 위험 명령 확인 끄기)이면 확인 카드 없이 그대로 실행.
+            if is_destructive_command(&command) && confirm_destructive() {
                 // 위험한 명령은 자동 실행 대신 사용자 확인 카드로
                 return ToolBlock::QuestionMarker(danger_shell_line(&command));
             }
@@ -499,6 +510,68 @@ fn classify_tool_call(name: &str, body: &str, call_idx: &mut usize) -> ToolBlock
         },
         _ => ToolBlock::Skip(format!("알 수 없는 도구: {name}")),
     }
+}
+
+/// 위험 명령 확인 카드 게이트. `CODEBRIDGE_DANGER_CONFIRM=0|false|off`이면 끄고, 아니면 켠다(기본 ON).
+/// 앱(main.cjs)이 settings.dangerConfirm 값을 이 env로 전달한다.
+fn confirm_destructive() -> bool {
+    match std::env::var("CODEBRIDGE_DANGER_CONFIRM") {
+        Ok(v) => !matches!(v.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"),
+        Err(_) => true,
+    }
+}
+
+/// 모델이 보낸 oldString을 파일의 실제 텍스트로 정규화한다.
+/// - oldString이 파일에 그대로 있으면 None (정규화 불필요)
+/// - 줄 단위로 trim 비교해 정확히 1곳만 일치하면 그 실제 구간을 반환 (CRLF 포함 원형 보존)
+/// - 매칭이 없거나 여러 곳이면 None (추측 금지 — opencode edit이 에러를 내고 모델이 재시도)
+fn normalize_old_string(root: &Path, rel: &str, old: &str) -> Option<String> {
+    if old.trim().is_empty() {
+        return None;
+    }
+    let full = root.join(rel);
+    // rel은 이미 sanitize_path를 통과한 상대경로. 그래도 root 밖으로 새지 않게 최종 확인.
+    let full_norm = full.canonicalize().ok()?;
+    let root_norm = root.canonicalize().ok()?;
+    if !full_norm.starts_with(&root_norm) {
+        return None;
+    }
+    let content = std::fs::read_to_string(&full_norm).ok()?;
+    if content.contains(old) {
+        return None;
+    }
+    let file_lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let mut old_lines: Vec<&str> = old.split('\n').collect();
+    if old_lines.last().is_some_and(|l| l.is_empty()) {
+        old_lines.pop(); // 끝의 개행은 라인 수 계산에서 제외
+    }
+    if old_lines.is_empty() || old_lines.len() > file_lines.len() {
+        return None;
+    }
+    let on: Vec<&str> = old_lines.iter().map(|l| l.trim()).collect();
+    let mut hits: Vec<usize> = Vec::new();
+    for start in 0..=(file_lines.len() - old_lines.len()) {
+        let window_ok = (0..old_lines.len()).all(|k| file_lines[start + k].trim() == on[k]);
+        if window_ok {
+            hits.push(start);
+            if hits.len() > 1 {
+                return None; // 모호함 — 추측 금지
+            }
+        }
+    }
+    let [start] = hits.as_slice() else {
+        return None;
+    };
+    let mut slice: String = file_lines[*start..*start + old_lines.len()].concat();
+    // old가 끝 개행을 가지지 않으면 slice의 끝 개행을 제거 (opencode edit 의미론 유지)
+    if !old.ends_with('\n') {
+        if slice.ends_with("\r\n") {
+            slice.truncate(slice.len() - 2);
+        } else if slice.ends_with('\n') {
+            slice.pop();
+        }
+    }
+    Some(slice)
 }
 
 fn make_call(idx: &mut usize, name: &str, args: Value) -> Value {
@@ -536,31 +609,65 @@ fn parse_tool_body(body: &str) -> Result<Value, String> {
 }
 
 /// 공백으로 구분된 key=value 나열 (따옴표 안 공백은 토큰으로 취급).
+/// 공백에서 잘라낼지는 "다음 토큰이 key= 형태인가"로 판단한다 —
+/// 따옴표 없는 값에 공백이 있어도(예: question=무엇을 할까요?) 값이 보존된다.
 fn split_kv(body: &str) -> Vec<String> {
+    let chars: Vec<char> = body.chars().collect();
     let mut out = Vec::new();
-    let mut cur = String::new();
+    let mut start = 0usize;
     let mut in_quotes = false;
-    for ch in body.chars() {
-        match ch {
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
             '"' => {
                 in_quotes = !in_quotes;
-                cur.push(ch);
+                i += 1;
             }
             ' ' | '\t' if !in_quotes => {
-                let t = cur.trim();
-                if !t.is_empty() {
-                    out.push(t.to_string());
+                let mut j = i + 1;
+                while j < chars.len() && (chars[j] == ' ' || chars[j] == '\t') {
+                    j += 1;
                 }
-                cur.clear();
+                if looks_like_kv_start(&chars[j..]) {
+                    let t: String = chars[start..i].iter().collect();
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        out.push(t.to_string());
+                    }
+                    start = j;
+                    i = j;
+                } else {
+                    i += 1;
+                }
             }
-            _ => cur.push(ch),
+            _ => i += 1,
         }
     }
-    let t = cur.trim();
+    let t: String = chars[start..].iter().collect();
+    let t = t.trim();
     if !t.is_empty() {
         out.push(t.to_string());
     }
     out
+}
+
+/// rest가 `key=value`의 `key=`로 시작하는지 (key는 ASCII 영숫자/_/-, 값 시작 전까지).
+fn looks_like_kv_start(rest: &[char]) -> bool {
+    let mut n = 0usize;
+    for (i, &c) in rest.iter().take(64).enumerate() {
+        if i == 0 && !(c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            n += 1;
+            continue;
+        }
+        if c == '=' {
+            return n > 0;
+        }
+        return false;
+    }
+    false
 }
 
 fn split_kv_item(part: &str) -> Option<(String, String)> {
@@ -806,6 +913,127 @@ mod tests {
         assert_eq!(out.question_lines.len(), 1);
         assert!(out.question_lines[0].starts_with("CODEBRIDGE_QUESTION: "));
         assert!(out.question_lines[0].contains("danger_shell"));
+    }
+
+    #[test]
+    fn flat_question_unquoted_values_with_spaces() {
+        let out = extract_tool_calls(
+            "TOOL question header=방향 question=무엇을 추가할까요 options=divide, power",
+        );
+        assert_eq!(out.calls.len(), 0);
+        assert_eq!(out.question_lines.len(), 1);
+        let json = out.question_lines[0].trim_start_matches("CODEBRIDGE_QUESTION: ");
+        let v: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(v["header"], "방향");
+        assert_eq!(v["question"], "무엇을 추가할까요");
+        assert_eq!(v["options"][0]["label"], "divide");
+        assert_eq!(v["options"][1]["label"], "power");
+    }
+
+    #[test]
+    fn kv_unquoted_multispace_value() {
+        let out = extract_tool_calls("TOOL read path=src/my dir/file.ts");
+        // path 값에 공백+진행 불가 시그니처(key= 형태 아님)이므로 값으로 포함된다
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["path"], "src/my dir/file.ts");
+    }
+
+    #[test]
+    fn kv_split_still_separates_real_keys() {
+        let out = extract_tool_calls("TOOL edit path=src/x.ts oldString=a b=2 newString=c");
+        // oldString="a" 다음 토큰이 b=2 (key= 형태) → 분리된다 (ambiguous이긴 하나 규칙에 맞게)
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["oldString"], "a");
+        assert_eq!(v["newString"], "c");
+    }
+
+    #[test]
+    fn confirm_destructive_defaults_on() {
+        // CI/테스트 환경에는 CODEBRIDGE_DANGER_CONFIRM이 없으므로 기본 ON
+        assert!(confirm_destructive());
+    }
+
+    #[test]
+    fn normalize_exact_match_returns_none() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_exact_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "hello world\n").unwrap();
+        assert_eq!(normalize_old_string(&dir, "a.txt", "hello world"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_indent_mismatch_single_hit() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_indent_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.rs");
+        std::fs::write(&f, "fn main() {\n    let x = 1;\n    let y = 2;\n}\n").unwrap();
+        // 모델이 들여쓰기를 생략하고 줄 내용만 보낸 경우 → 실제 텍스트로 복원
+        let got = normalize_old_string(&dir, "a.rs", "let x = 1;\nlet y = 2;");
+        assert_eq!(got.as_deref(), Some("    let x = 1;\n    let y = 2;"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_crlf_file_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_crlf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "one\r\ntwo\r\nthree\r\n").unwrap();
+        // LF로만 온 oldString이어도 CRLF 파일에서 구간을 되찾아 CRLF로 복원
+        let got = normalize_old_string(&dir, "a.txt", "one\ntwo");
+        assert_eq!(got.as_deref(), Some("one\r\ntwo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_ambiguous_returns_none() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_amb_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        // contains("dup\ndup")는 false이지만 줄 trim 기준으로는 2곳 매칭 → 모호 → None
+        std::fs::write(&f, "  dup\n  dup\n  dup\n").unwrap();
+        assert_eq!(normalize_old_string(&dir, "a.txt", "dup\ndup"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_missing_file_returns_none() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_miss_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(normalize_old_string(&dir, "nope.txt", "whatever"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_path_escape_returns_none() {
+        let dir = std::env::temp_dir().join(format!("cb_norm_esc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(normalize_old_string(&dir, "../escape.txt", "x"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_promotes_with_cwd_normalization() {
+        let dir = std::env::temp_dir().join(format!("cb_edit_promote_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("src.txt");
+        std::fs::write(&f, "body {\n    needle_one();\n    needle_two();\n}\n").unwrap();
+        // 모델이 인덴트를 생략한 멀티라인 oldString → 파일의 실제 텍스트로 복원되어 승격
+        let out = extract_tool_calls_in(
+            r#"TOOL edit {"path": "src.txt", "oldString": "needle_one();\nneedle_two();", "newString": "done();"}"#,
+            Some(dir.as_path()),
+        );
+        assert_eq!(out.calls.len(), 1);
+        let args = out.calls[0]["function"]["arguments"].as_str().unwrap();
+        let v: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["oldString"], "    needle_one();\n    needle_two();");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

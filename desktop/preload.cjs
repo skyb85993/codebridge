@@ -32,4 +32,25 @@ contextBridge.exposeInMainWorld('codebridge', {
   quitAndInstall() {
     return ipcRenderer.invoke('updater:quitAndInstall');
   },
+  getSettings() {
+    return ipcRenderer.invoke('app:getSettings');
+  },
+  setSettings(patch) {
+    return ipcRenderer.invoke('app:setSettings', patch);
+  },
+  openLogsFolder() {
+    return ipcRenderer.invoke('app:openLogsFolder');
+  },
+  openReleasesPage() {
+    return ipcRenderer.invoke('app:openReleasesPage');
+  },
+  checkUpdates() {
+    return ipcRenderer.invoke('app:checkUpdates');
+  },
+  resetChromeProfile() {
+    return ipcRenderer.invoke('app:resetChromeProfile');
+  },
+  restartBridge() {
+    return ipcRenderer.invoke('app:restartBridge');
+  },
 });
