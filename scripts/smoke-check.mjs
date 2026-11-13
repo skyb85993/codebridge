@@ -48,17 +48,45 @@ if (!fs.existsSync(ELECTRON)) {
 }
 
 const isWin = process.platform === 'win32';
-const killTree = (proc) => {
-  if (!proc || proc.killed) return;
-  if (isWin) {
-    try {
-      spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], { windowsHide: true });
+// taskkill을 발사하고 종료될 때까지 기다린다 (무한정 기다리지 않음)
+const killTree = (proc) =>
+  new Promise((resolve) => {
+    if (!proc || proc.killed || !proc.pid) {
+      resolve();
       return;
+    }
+    if (isWin) {
+      try {
+        const t = spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        t.on('exit', () => resolve());
+        t.on('error', () => resolve());
+        setTimeout(() => {
+          try { t.kill(); } catch {}
+          resolve();
+        }, 5000);
+        return;
+      } catch {
+        /* 폴백 */
+      }
+    }
+    try { proc.kill('SIGKILL'); } catch {}
+    resolve();
+  });
+
+// 프로필 폴더 삭제 — Electron이 아직 파일을 잡고 있을 수 있으므로 재시도
+const rmProfileWithRetry = async (dir, attempts = 5, delayMs = 400) => {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return true;
     } catch {
-      /* 폴백 */
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
-  try { proc.kill('SIGKILL'); } catch {}
+  return false;
 };
 
 // 설치본 앱이 살아 있을 때도 실행되도록 별도 userData 프로필로 띄운다
@@ -124,12 +152,8 @@ try {
   console.error('ERROR', (e && e.message) || e);
   results.push({ name: 'runner', ok: false });
 } finally {
-  killTree(proc);
-  try {
-    fs.rmSync(smokeProfile, { recursive: true, force: true });
-  } catch {
-    /* 정리 실패는 무시 */
-  }
+  await killTree(proc);
+  await rmProfileWithRetry(smokeProfile, 5, 400);
 }
 
 const failed = results.filter((r) => !r.ok);

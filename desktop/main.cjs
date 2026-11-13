@@ -119,6 +119,19 @@ function readWindowBounds() {
   }
   return null;
 }
+
+// 저장된 창 배치를 디스플레이 workArea 안쪽으로 클램프 (모니터 해제/해상도 변경 대비)
+function clampWindowBounds(saved, area) {
+  const clamp = (v, min, max) => Math.min(Math.max(v, min), Math.max(min, max));
+  const width = clamp(saved.width, 1000, area.width);
+  const height = clamp(saved.height, 640, area.height);
+  return {
+    width,
+    height,
+    x: clamp(saved.x, area.x, area.x + area.width - width),
+    y: clamp(saved.y, area.y, area.y + area.height - height),
+  };
+}
 function saveWindowBoundsSoon() {
   clearTimeout(boundsSaveTimer);
   boundsSaveTimer = setTimeout(() => {
@@ -132,7 +145,7 @@ function saveWindowBoundsSoon() {
 function trackWindowBounds(win) {
   const capture = () => {
     if (!mainWindow) return;
-    const b = mainWindow.getBounds();
+    const b = mainWindow.getNormalBounds();
     lastLayout = { x: b.x, y: b.y, width: b.width, height: b.height, isMaximized: mainWindow.isMaximized() };
     saveWindowBoundsSoon();
   };
@@ -182,6 +195,30 @@ function killChild(proc) {
   }
 }
 
+// 자식/손자 프로세스 트리가 종료될 때까지 기다린다 (taskkill 발사와 무관하게 exit 대기).
+// 포트 재사용 바인딩 실패를 방지하기 위해 교체 스폰 전에 호출한다.
+function waitChildExit(proc, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    if (!proc || proc.killed || !proc.pid) {
+      resolve(true);
+      return;
+    }
+    if (proc.exitCode !== null || proc.signalCode) {
+      resolve(true);
+      return;
+    }
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(t);
+      resolve(ok);
+    };
+    const t = setTimeout(() => finish(false), timeoutMs);
+    proc.once('exit', () => finish(true));
+  });
+}
+
 // ---------- opencode.json (전역 템플릿 → 프로젝트 폴더 동기화) ----------
 function ensureOpencodeJson(dir) {
   const target = path.join(dir, 'opencode.json');
@@ -224,8 +261,11 @@ function rotateLargeLog(name, capBytes = 5 * 1024 * 1024) {
   }
 }
 
-function spawnBridge(cwd) {
-  if (bridgeProc) killChild(bridgeProc);
+async function spawnBridge(cwd) {
+  if (bridgeProc) {
+    killChild(bridgeProc);
+    await waitChildExit(bridgeProc, 8000);
+  }
   rotateLargeLog('bridge.log');
   const { stream } = logStream('bridge');
   const settings = getSettings();
@@ -252,8 +292,11 @@ function spawnBridge(cwd) {
   return bridgeProc;
 }
 
-function spawnOpencode(cwd) {
-  if (opencodeProc) killChild(opencodeProc);
+async function spawnOpencode(cwd) {
+  if (opencodeProc) {
+    killChild(opencodeProc);
+    await waitChildExit(opencodeProc, 8000);
+  }
   const { stream } = logStream('opencode');
   servePassword = require('crypto').randomBytes(24).toString('base64url');
   const args = ['serve', '--hostname', '127.0.0.1', '--port', String(SERVE_PORT)];
@@ -370,8 +413,8 @@ async function startServices(dir) {
   ensureDir(DATA_DIR);
   ensureDir(LOG_DIR);
   ensureOpencodeJson(dir);
-  spawnBridge(dir);
-  spawnOpencode(dir);
+  await spawnBridge(dir);
+  await spawnOpencode(dir);
   const [bridgeOk, opencodeOk] = await Promise.all([waitForBridge(), waitForOpencode()]);
   appendLog('boot', `[boot] services bridgeOk=${bridgeOk} opencodeOk=${opencodeOk}\n`);
   return bridgeOk && opencodeOk;
@@ -505,23 +548,26 @@ function buildTray() {
 // ---------- 창 ----------
 function createWindow() {
   const savedBounds = readWindowBounds();
-  const { workAreaSize } = screen.getPrimaryDisplay();
-  let windowOpts = {
-    width: Math.min(Math.max(savedBounds?.width ?? 1280, 1000), Math.max(workAreaSize.width, 1000)),
-    height: Math.min(Math.max(savedBounds?.height ?? 840, 640), Math.max(workAreaSize.height, 640)),
+  const area = screen.getPrimaryDisplay().workArea; // {x, y, width, height}
+  const base = savedBounds ?? { x: undefined, y: undefined, width: 1280, height: 840 };
+  const clamped = clampWindowBounds(
+    {
+      width: base.width,
+      height: base.height,
+      x: Number.isFinite(base.x) ? base.x : area.x + 40,
+      y: Number.isFinite(base.y) ? base.y : area.y + 40,
+    },
+    area,
+  );
+  const windowOpts = {
+    width: clamped.width,
+    height: clamped.height,
     minWidth: 1000,
     minHeight: 640,
     title: 'CodeBridge',
+    x: clamped.x,
+    y: clamped.y,
   };
-  if (
-    savedBounds &&
-    Number.isFinite(savedBounds.x) &&
-    Number.isFinite(savedBounds.y)
-  ) {
-    const x = Math.min(Math.max(savedBounds.x, 0), Math.max(workAreaSize.width - 200, 0));
-    const y = Math.min(Math.max(savedBounds.y, 0), Math.max(workAreaSize.height - 100, 0));
-    windowOpts = { ...windowOpts, x, y };
-  }
   mainWindow = new BrowserWindow({
     ...windowOpts,
     backgroundColor: '#0a0e14',
@@ -761,7 +807,7 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
     cur.hideContextNote !== next.hideContextNote;
   if (bridgeAffected && projectDir) {
     appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit})\n`);
-    spawnBridge(projectDir);
+    await spawnBridge(projectDir);
   }
   return { ok: true, settings: next };
 });
@@ -823,7 +869,7 @@ ipcMain.handle('app:resetChromeProfile', async () => {
     } else {
       appendLog('settings', '[settings] chrome-profile reset (profile folder did not exist)\n');
     }
-    if (projectDir) spawnBridge(projectDir);
+    if (projectDir) await spawnBridge(projectDir);
     return { ok: true, backup: fs.existsSync(bak) ? bak : null };
   } catch (e) {
     appendLog('settings', `[settings] chrome-profile reset failed: ${e && e.message ? e.message : e}\n`);
@@ -834,7 +880,7 @@ ipcMain.handle('app:resetChromeProfile', async () => {
 // 브릿지만 재시작 (설정 env 반영, opencode 유지)
 ipcMain.handle('app:restartBridge', async () => {
   if (!projectDir) return { ok: false, error: '프로젝트 폴더가 선택되지 않았습니다.' };
-  spawnBridge(projectDir);
+  await spawnBridge(projectDir);
   return { ok: true };
 });
 
@@ -881,17 +927,28 @@ ipcMain.handle('app:removeRecentProject', async (_e, dir) => {
 
 // MRU에서 폴더를 즉시 전환 (서비스 재시작 포함)
 ipcMain.handle('app:switchProject', async (_e, dir) => {
-  if (typeof dir !== 'string' || !fs.existsSync(dir)) {
+  if (typeof dir !== 'string' || !dir.trim()) {
+    return { ok: false, error: '잘못된 경로입니다.' };
+  }
+  let stat;
+  try {
+    stat = fs.statSync(dir);
+  } catch {
     return { ok: false, error: '폴더를 찾을 수 없습니다.' };
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, error: '디렉토리가 아닙니다.' };
   }
   projectDir = dir;
   writeSettings({ ...readSettings(), projectDir });
   addRecentProject(dir);
   appendLog('boot', `[boot] project switched to ${dir}\n`);
   try {
-    await startServices(dir);
+    const ok = await startServices(dir);
+    if (!ok) return { ok: false, error: '서비스를 재시작하지 못했습니다.' };
   } catch (e) {
     appendLog('boot', `[boot] restart after switch failed: ${e}\n`);
+    return { ok: false, error: String(e) };
   }
   return { ok: true, projectDir: dir };
 });
@@ -1004,7 +1061,9 @@ if (!gotLock) {
       setupAutoUpdate();
       appendLog('boot', `[boot] window created; projectDir=${projectDir || '(unset)'}\n`);
       if (projectDir) {
-        startServices(projectDir);
+        startServices(projectDir).catch((e) =>
+          appendLog('boot', `[boot] startServices failed: ${e}\n`),
+        );
       }
       // 프로젝트 폴더가 없으면 렌더러가 화면에서 선택한다
     } catch (e) {

@@ -257,7 +257,7 @@ export default function App() {
   const exportSession = useCallback(async () => {
     if (!activeId) return;
     try {
-      const msgs = await api.getMessages(activeId);
+      const { messages: msgs, truncated } = await api.getRecentMessages(activeId);
       const title = activeSession?.title?.trim() || '대화';
       const lines: string[] = [
         `# ${title}`,
@@ -288,8 +288,9 @@ export default function App() {
         markdown: lines.join('\n'),
         filename: `${safe}.md`,
       });
-      if (res.ok) flashNote(`대화를 저장했습니다 — ${res.path}`);
-      else if (!res.cancelled) flashNote(res.error ?? '저장에 실패했습니다.');
+      if (res.ok) {
+        flashNote(truncated ? `저장했습니다 (긴 대화라 최근 200개만 포함) — ${res.path}` : `대화를 저장했습니다 — ${res.path}`);
+      } else if (!res.cancelled) flashNote(res.error ?? '저장에 실패했습니다.');
     } catch {
       flashNote('내보내기를 완료하지 못했습니다.');
     }
@@ -441,6 +442,8 @@ export default function App() {
             canApplyModelToCurrent={!!activeId}
             onSwitchProject={switchProject}
             onRemoveRecentProject={removeRecentProject}
+            onExportSession={exportSession}
+            canExportSession={!!activeId}
           />
         )}
       </div>
@@ -467,6 +470,8 @@ export default function App() {
           canApplyModelToCurrent={!!activeId}
           onSwitchProject={switchProject}
           onRemoveRecentProject={removeRecentProject}
+          onExportSession={exportSession}
+          canExportSession={!!activeId}
         />
       )}
       <div className="flex min-h-0 flex-1">
@@ -497,7 +502,6 @@ export default function App() {
             busy={busy}
             model={model}
             onModelChange={changeModel}
-            onExportSession={exportSession}
           />
         </main>
       </div>

@@ -66,6 +66,15 @@ export const api = {
     const r = await oc(`/api/session/${sessionId}/message?order=asc&limit=200`);
     return (r.json?.data as ChatMessage[]) ?? [];
   },
+  // 대화 내보내기용 — 최신 200개만 보장하고 그 이상이면 truncated=true로 알린다
+  getRecentMessages: async (
+    sessionId: string,
+  ): Promise<{ messages: ChatMessage[]; truncated: boolean }> => {
+    const r = await oc(`/api/session/${sessionId}/message?order=desc&limit=200`);
+    const data = (r.json?.data as ChatMessage[]) ?? [];
+    const messages = [...data].reverse();
+    return { messages, truncated: data.length >= 200 };
+  },
   sendPrompt: (sessionId: string, text: string) =>
     oc(`/api/session/${sessionId}/prompt`, { method: 'POST', body: { text } }),
   switchModel: (sessionId: string, model: { id: string; providerID: string }) =>

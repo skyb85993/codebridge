@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Check,
   Trash2,
+  Download,
 } from 'lucide-react';
 import { MODELS, type ModelID } from '../api';
 import type { HostSettings, HostSettingsPatch } from '../ipc';
@@ -27,6 +28,8 @@ interface SettingsModalProps {
   canApplyModelToCurrent?: boolean;
   onSwitchProject?: (dir: string) => void;
   onRemoveRecentProject?: (dir: string) => void;
+  onExportSession?: () => void;
+  canExportSession?: boolean;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -86,6 +89,8 @@ export default function SettingsModal({
   canApplyModelToCurrent,
   onSwitchProject,
   onRemoveRecentProject,
+  onExportSession,
+  canExportSession,
 }: SettingsModalProps) {
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -317,7 +322,14 @@ export default function SettingsModal({
                               전환
                             </button>
                             <button
-                              onClick={() => onRemoveRecentProject?.(dir)}
+                              onClick={() => {
+                                onRemoveRecentProject?.(dir);
+                                setSettings((cur) =>
+                                  cur
+                                    ? { ...cur, recentProjects: cur.recentProjects.filter((p) => p !== dir) }
+                                    : cur,
+                                );
+                              }}
                               aria-label="목록에서 제거"
                               title="목록에서 제거"
                               className="shrink-0 text-dim transition-colors hover:text-red-300"
@@ -463,6 +475,27 @@ export default function SettingsModal({
               </div>
             </Section>
 
+            {/* 대화 */}
+            <Section title="대화">
+              <Row
+                label="대화 내보내기"
+                desc="현재 대화를 마크다운(.md) 파일로 저장합니다"
+                control={
+                  <button
+                    onClick={() => onExportSession?.()}
+                    disabled={!canExportSession}
+                    className={`${actionBtn} ${
+                      canExportSession ? '' : 'cursor-not-allowed opacity-40'
+                    }`}
+                    title={canExportSession ? '현재 대화를 마크다운으로 저장' : '대화를 불러오지 못했습니다'}
+                  >
+                    <Download size={12} />
+                    저장
+                  </button>
+                }
+              />
+            </Section>
+
             {/* 알림 */}
             <Section title="알림">
               <Row
@@ -603,7 +636,7 @@ export default function SettingsModal({
               <ul className="flex flex-col gap-1.5 text-[10.5px] leading-snug text-dim">
                 <li>· 에이전트에게 파일 수정을 시키려면: "TODO 하나 찾아서 고쳐줘"</li>
                 <li>· 더 나은 질문이 필요하면 질문 카드가 뜹니다 — 선택지를 고르면 계속 진행합니다</li>
-                <li>· 되돌릴 수 없는 삭제/포맷 명령은 확인 카드를 거칩니다 (끌 수 없음)</li>
+                <li>· 되돌릴 수 없는 삭제/포맷은 확인 카드로 확인합니다 (끄려면 설정 → 승인에서)</li>
                 <li>· 긴 대화는 "지금 인수인계"로 새 웹 채팅으로 옮길 수 있습니다</li>
                 <li>· 파일은 프로젝트 폴더에 바로 작성됩니다 — 직접 열어서 확인하세요</li>
                 <li>· 문제가 생기면 "진단 → 로그 폴더 열기"에서 boot.log / bridge.log를 확인하세요</li>

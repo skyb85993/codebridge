@@ -445,3 +445,19 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 **프로세스 교훈**
 
 - lockfile 문자열 치환 실수(v0.9.0 사태)가 있어 package-lock의 모든 변경은 **diff로 검증**한다. v0.10.0 버전 범프도 diff 확인으로 3줄(2개 앱 버전)만 변경됨을 검증.
+
+## v0.11.0 — CodeRabbit 지적 전부 반영 (2026-11-13)
+
+**변경 요약 (코드리뷰 기반)**
+
+- **대화 내보내기를 컴포저 → 설정창 "대화" 섹션으로 이동** (`SettingsModal` — 현재 세션 없으면 버튼 비활성화). 내보내기는 opencode의 asc+limit=200 대신 `order=desc&limit=200`으로 **최신 200개 우선**, 초과 시 토스트로 안내.
+- **switchProject 엄격화**: `fs.statSync`로 디렉토리 확인, startServices readiness 실패/예외 시 `{ ok:false, error }` 반환, 전환이 취소되지 않고 실제로 서비스까지 올라갔는지 검증.
+- **서비스 교체 동기화**: `waitChildExit(proc, 8000)` — taskkill 후 exit 이벤트를 기다리고 교체 스폰. 이전엔 포트 해제 전에 재바인딩 → 브릿지 panic/바인딩 10048 위험 제거. `startServices` 호출부 전부 await.
+- **창 bounds 저장 방식 개선**: `getNormalBounds()` (일반 크기 추적) + workArea 원점 포함 클램프 (모니터 제거/해상도 변경 대비 — 기존엔 일부만 보일 수 있었음).
+- **렌더러 알림/스모크**: `killTree` 후 taskkill 종료 대기 → 프로필 삭제 5회 재시도.
+- **설정 MRU 제거 즉시 반영**: 모달 내 settings state도 함께 갱신.
+- **도움말 문구 정정**: 위험 명령 확인 카드는 설정에서 끌 수 있음 (이전 문구는 "끌 수 없음"이었는데 이제는 토글이 존재).
+
+**검증**
+
+- `cargo test --release` 54/54 green, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
