@@ -140,14 +140,28 @@ pub struct CompletedPage {
 }
 
 fn js_string(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+    // JSON 문자열은 U+2028/U+2029를 이스케이프하지 않는다.
+    // 이 둘은 JS 파서에서 "줄 종결자"로 취급되어 문자열이 중간에서 끊기므로
+    // (SyntaxError: Unexpected string) 반드시 \u2028/\u2029로 변환한다.
+    serde_json::to_string(s)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
 async fn eval_str(page: &Page, js: &str) -> Result<String, EngineError> {
     let v = page
         .evaluate(js)
         .await
-        .map_err(|e| EngineError::Page(e.to_string()))?;
+        .map_err(|e| {
+            // 실패한 스크립트 전문을 파일로 덤프한다 (디버깅의 핵심)
+            let dir = std::env::temp_dir().join("opencode");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("eval_str_failed.js"), js);
+            let snippet: String = js.chars().take(400).collect();
+            println!("[browser] eval_str FAILED ({}chars): {}", js.chars().count(), snippet);
+            EngineError::Page(e.to_string())
+        })?;
     Ok(match v.value() {
         Some(Value::String(s)) => s.clone(),
         Some(other) => other.to_string(),
@@ -632,21 +646,70 @@ impl Engine {
         .await
         .unwrap_or_default();
 
-        // 입력
-        let insert = format!(
-            r#"(() => {{
-                const el = document.querySelector({sel});
-                if (!el) return 'missing';
-                el.focus();
-                const ok = document.execCommand('insertText', false, {text});
-                return ok ? 'ok' : 'failed';
-            }})()"#,
-            sel = js_string(sel.composer_sel),
-            text = js_string(prompt),
-        );
-        let r = eval_str(&page, &insert).await?;
-        if r != "ok" {
-            return Err(EngineError::Page(format!("입력 실패: {r}")));
+        // 입력 — execCommand가 숨김 창 + 새 페이지에서 실패할 수 있어 3단계 폴백을 쓴다.
+        // 삽입 후 컴포저 내용을 읽어 실제로 반영됐는지 확인하고, 안 됐으면 잠시 후 재시도한다.
+        let mut inserted = false;
+        for attempt in 1..=3 {
+            let insert = format!(
+                r#"(() => {{
+                    const el = document.querySelector({sel});
+                    if (!el) return 'missing';
+                    el.focus();
+                    // ① execCommand('insertText')
+                    try {{
+                        if (document.execCommand && document.execCommand('insertText', false, {text})) return 'execCommand';
+                    }} catch (e) {{}}
+                    // ② ClipboardEvent paste 시뮬레이션 (새 페이지/숨김 창에서 더 잘 동작)
+                    try {{
+                        const dt = new DataTransfer();
+                        dt.setData('text/plain', {text});
+                        el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+                        return 'paste';
+                    }} catch (e) {{}}
+                    // ③ 직접 텍스트 세팅 + InputEvent (최후 수단)
+                    try {{
+                        if (el.isContentEditable) {{
+                            el.innerText = {text};
+                        }} else {{
+                            const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set;
+                            setter.call(el, {text});
+                        }}
+                        el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: {text} }}));
+                        return 'direct';
+                    }} catch (e) {{
+                        return 'failed';
+                    }}
+                }})()"#,
+                sel = js_string(sel.composer_sel),
+                text = js_string(prompt),
+            );
+            let r = eval_str(&page, &insert).await?;
+            if r != "missing" && r != "failed" {
+                // 삽입 결과 확인 (contenteditable/textarea 모두 커버)
+                let check = eval_str(
+                    &page,
+                    &format!(
+                        r#"(() => {{ const el = document.querySelector({sel}); if (!el) return ''; return el.innerText !== undefined ? el.innerText : (el.value ?? ''); }})()"#,
+                        sel = js_string(sel.composer_sel)
+                    ),
+                )
+                .await
+                .unwrap_or_default();
+                if !check.trim().is_empty() {
+                    println!("[browser] 입력 삽입 성공 (attempt {attempt}, 방법={r})");
+                    inserted = true;
+                    break;
+                }
+                println!("[browser] 입력 삽입 후 확인 실패 (attempt {attempt}, 방법={r}): 컴포저가 비어 있음 — 재시도");
+            } else {
+                println!("[browser] 입력 삽입 실패 (attempt {attempt}): {r} — 재시도");
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+        if !inserted {
+            return Err(EngineError::Page(
+                "입력 실패: 3회 재시도 후에도 컴포저에 텍스트가 반영되지 않았습니다".into(),
+            ));
         }
 
         // Gemini: 입력 후 500ms 안정화 대기 + 'input' 이벤트 디스패치 (Angular 상태 동기화)

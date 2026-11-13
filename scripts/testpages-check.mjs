@@ -98,26 +98,48 @@ const { server, port } = await serve();
 const chrome = findChrome();
 console.log(`chrome: ${chrome}`);
 const debugPort = 19337;
-const proc = spawn(chrome, [
+const chromeArgs = () => [
   '--headless=new',
   `--remote-debugging-port=${debugPort}`,
   '--no-first-run',
   '--disable-gpu',
   '--disable-features=Translate',
+  '--no-sandbox',
   `--user-data-dir=${path.join(ROOT, '.testpages-profile')}`,
   'about:blank',
-], { stdio: 'ignore' });
+];
+const launchChrome = () => spawn(chrome, chromeArgs(), { stdio: 'ignore' });
 
-try {
-  // Chrome 기동 대기
-  let list = null;
-  for (let i = 0; i < 50 && !list; i++) {
+const spawnChromeOnce = async () => {
+  let proc = launchChrome();
+  // Chrome 기동 대기 (헤드리스도 환경에 따라 15초 넘길 수 있음)
+  for (let i = 0; i < 75 && !list; i++) {
     try {
       list = await (await fetch(`http://127.0.0.1:${debugPort}/json`)).json();
     } catch {
       await new Promise((r) => setTimeout(r, 200));
     }
   }
+  if (list) return proc;
+  // 실패 시 한 번만 죽이고 재시도 (러너의 Chrome flake 완화)
+  try { proc.kill(); } catch {}
+  await new Promise((r) => setTimeout(r, 1500));
+  proc = launchChrome();
+  for (let i = 0; i < 75 && !list; i++) {
+    try {
+      list = await (await fetch(`http://127.0.0.1:${debugPort}/json`)).json();
+    } catch {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  return proc;
+};
+
+let list = null;
+const proc = await spawnChromeOnce();
+
+try {
+  // spawnChromeOnce가 두 Chrome 모두 확인했으므로, 실패 시에만 여기까지 옴
   if (!list) throw new Error('Chrome CDP did not come up');
 
   const ws = await cdpConnect(`http://127.0.0.1:${debugPort}/json`);

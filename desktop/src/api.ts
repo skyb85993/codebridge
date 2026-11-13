@@ -72,6 +72,15 @@ export const api = {
     oc(`/api/session/${sessionId}/model`, { method: 'POST', body: { model } }),
   interrupt: (sessionId: string) =>
     oc(`/api/session/${sessionId}/interrupt`, { method: 'POST', body: {} }),
+  // 세션 삭제. opencode는 204를 반환한다. 실패해도 앱이 깨지지 않도록 boolean으로 축약.
+  deleteSession: async (sessionId: string): Promise<boolean> => {
+    try {
+      const r = await oc(`/api/session/${sessionId}`, { method: 'DELETE' });
+      return r.status >= 200 && r.status < 300;
+    } catch {
+      return false;
+    }
+  },
   probe: () => window.codebridge.probe(),
 };
 

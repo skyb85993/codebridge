@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { FolderOpen, MessageSquarePlus, Search, Circle } from 'lucide-react';
+import { FolderOpen, MessageSquarePlus, Search, Circle, Trash2 } from 'lucide-react';
 import { SessionInfo, formatRelTime } from '../api';
 import type { HostProbe } from '../ipc';
 
@@ -11,6 +11,7 @@ interface SidebarProps {
   projectDir: string | null;
   onPickProject: () => void;
   probe: HostProbe | null;
+  onDelete: (id: string) => void | Promise<void>;
   onShowChrome: () => Promise<{
     ok: boolean;
     action?: string;
@@ -27,11 +28,13 @@ export default function Sidebar({
   projectDir,
   onPickProject,
   probe,
+  onDelete,
   onShowChrome,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
   const [opening, setOpening] = useState(false);
   const [showChromeError, setShowChromeError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -101,24 +104,62 @@ export default function Sidebar({
         )}
         {filtered.map((s) => {
           const active = s.id === activeId;
+          const confirming = confirmDeleteId === s.id;
+          if (confirming) {
+            return (
+              <div key={s.id} className="mb-1 flex items-center gap-1.5 rounded-lg border border-red-400/25 bg-red-400/10 px-2 py-2">
+                <Trash2 size={13} className="shrink-0 text-red-300" strokeWidth={2} />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-red-200">
+                  삭제할까요?
+                </span>
+                <button
+                  className="shrink-0 rounded-md bg-red-500/80 px-2 py-1 text-[10px] font-bold text-white transition-colors hover:bg-red-500"
+                  onClick={() => {
+                    setConfirmDeleteId(null);
+                    void onDelete(s.id);
+                  }}
+                >
+                  삭제
+                </button>
+                <button
+                  className="shrink-0 rounded-md border border-lineSoft bg-panel2 px-2 py-1 text-[10px] text-dim transition-colors hover:text-text"
+                  onClick={() => setConfirmDeleteId(null)}
+                >
+                  취소
+                </button>
+              </div>
+            );
+          }
           return (
-            <button
+            <div
               key={s.id}
-              onClick={() => onSelect(s.id)}
-              className={`group relative mb-1 w-full rounded-lg px-3 py-2 text-left transition-colors ${
+              className={`group relative mb-1 flex w-full items-center overflow-hidden rounded-lg transition-colors ${
                 active ? 'bg-panel3 text-text' : 'text-dim hover:bg-panel2 hover:text-text'
               }`}
             >
-              {active && (
-                <span className="absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full bg-accent-grad" />
-              )}
-              <span className="block truncate text-[12px] leading-snug">
-                {s.title?.trim() || '새 대화'}
-              </span>
-              <span className="mt-0.5 block text-[10px] text-dim">
-                {formatRelTime(s.time?.updated ?? s.time?.created)}
-              </span>
-            </button>
+              <button
+                onClick={() => onSelect(s.id)}
+                className="min-w-0 flex-1 px-3 py-2 text-left"
+              >
+                {active && (
+                  <span className="absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full bg-accent-grad" />
+                )}
+                <span className="block truncate text-[12px] leading-snug">
+                  {s.title?.trim() || '새 대화'}
+                </span>
+                <span className="mt-0.5 block text-[10px] text-dim">
+                  {formatRelTime(s.time?.updated ?? s.time?.created)}
+                </span>
+              </button>
+              <button
+                className="mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-md text-dim opacity-0 transition-all hover:bg-red-400/15 hover:text-red-300 focus:opacity-100 focus:outline-none group-hover:opacity-100"
+                title="이 대화 삭제"
+                aria-label="이 대화 삭제"
+                onClick={() => setConfirmDeleteId(s.id)}
+              >
+                <Trash2 size={13} strokeWidth={2} />
+              </button>
+            </div>
           );
         })}
       </nav>

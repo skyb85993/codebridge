@@ -84,5 +84,11 @@ function isLastAssistantDone(messages: ChatMessage[]): boolean {
   const last = [...messages].reverse().find((m) => m.type === 'assistant');
   if (!last) return false;
   const msg = last as Extract<ChatMessage, { type: 'assistant' }>;
-  return msg.finish === 'stop' || msg.finish === 'tool-calls' || msg.finish === 'length';
+  // App.tsx와 동일: terminal finish만 완료로 본다 (tool-calls는 루프 중간)
+  return (
+    msg.finish === 'stop' ||
+    msg.finish === 'length' ||
+    msg.finish === 'content-filter' ||
+    msg.finish === 'error'
+  );
 }

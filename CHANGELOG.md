@@ -1,5 +1,27 @@
 # 릴리즈 노트
 
+## v0.7.0 (2026-11-13)
+
+검증·안정화 릴리스 — 인수인계 체인을 실제로 동작시키고, 진행 중인 답변이 화면에 나타나지 않던 버그를 잡았습니다:
+
+**결정적 버그 수정**
+- **핸드오버 입력 JS 깨짐 수정** — Rust `format!`에서 named 인자 `{sel}` 다음에 온 무명 `{}`가 첫 번째 named 인자(selector)로 바인딩되어 `catch (e) "textarea#prompt-textarea..."` 형태가 되던 것을 `{{}}`로 이스케이프 수정. (숨김 창 새 채팅에서 입력이 불가능하던 근본 원인)
+- **숨김 창 입력 3단계 폴백** — `execCommand('insertText')` → `ClipboardEvent('paste')` → 직접 세팅+`InputEvent` 순서로 시도하고, **삽입 후 컴포저 내용을 읽어 실제로 반영됐는지 확인**(최대 3회 재시도). 새 채팅 직후 입력이 적용되지 않던 문제 해결
+- **`js_string` U+2028/U+2029 이스케이프** — JSON이 이스케이프하지 않는 JS 줄 종결자를 그대로 넘기면 문자열이 중간에서 끊겨 SyntaxError가 나는 고전적 함정 수정
+- **UI busy 판정 버그** — assistant `tool-calls`(루프 중간)와 이전 assistant의 `stop`(직전에 보낸 질문의 종료)을 종료로 오인해 폴링 루프가 멈추던 문제 수정. 이제 "이전과 다른 assistant의 terminal finish"에서만 해제 → 질문 카드에 답한 뒤에도 새 답변(도구 호출 포함)이 **새로고침 없이** 렌더됨. 백그라운드 스로틀링 환경에선 지연될 수 있음
+
+**기능**
+- 사이드바 세션 삭제 버튼 (호버 시 표시, 인라인 2단계 확인) + `api.deleteSession` (`DELETE /api/session/{id}`)
+
+**검증 (실측)**
+- **질문 카드 전체 루프** — 카드 렌더 → "divide" 클릭 → `TOOL glob` 호출 → 두 번째 질문 카드 자동 렌더 (새로고침 없이)
+- **Gemini 실측** — 로그인 상태 확인, `TOOL question` 호출 → 카드 렌더 (ChatGPT와 동일 경로)
+- **인수인계 체인** — 수동 트리거 → 원 응답 + 새 채팅 자동 회전 + handover pack 전송 → `chain_ok` (전용 Chrome이 새 대화로 이동)
+- danger_shell 확인 카드는 모델이 자발적으로 호출하지 않음을 3회 확인 (실사용은 question 카드로 도달); 파서 변환은 단위 테스트 유지
+
+**인프라**
+- `testpages-check` flake 완화: CDP 기동 대기 10초→15초 + Chrome kill 후 1회 재시도 + `--no-sandbox`
+
 ## v0.6.0 (2026-11-13)
 
 설정 화면 + 남은 문제 해결 릴리스:

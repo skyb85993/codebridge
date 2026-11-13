@@ -33,6 +33,12 @@ export default function App() {
   );
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  // busy 시작 시점의 마지막 assistant id — 이후 "다른" assistant가 terminal finish를 가질 때만 해제.
+  // (카드로 답장을 보내도 이전 assistant의 stop이 목록에 남아 있어서, 그것만 보고 풀면
+  //   사용자 메시지만 있는 상태에서 busy가 꺼져 폴링이 멈춘다)
+  const busyAssistantRef = useRef<string | null>(null);
 
   // ---------- 부팅 ----------
   useEffect(() => {
@@ -111,12 +117,16 @@ export default function App() {
     return () => clearInterval(t);
   }, [activeId, busy, loadMessages]);
 
-  // busy 해제 판정: 마지막 assistant가 finish를 가지면 끝난 것으로 간주
+  // busy 해제 판정: 마지막 assistant가 "종료성" finish를 가지면 끝난 것으로 간주.
+  // 주의: "tool-calls"는 opencode 도구 루프의 중간 턴이다 — 여기서 busy를 풀면
+  // 루프가 끝날 때까지의 후속 메시지(도구 결과/다음 답변)가 화면에 안 나타난다.
   useEffect(() => {
     if (!busy) return;
+    const TERMINAL = new Set(['stop', 'length', 'content-filter', 'error']);
     const lastAssistant = [...messages].reverse().find((m) => m.type === 'assistant');
     const finish = (lastAssistant as { finish?: string } | undefined)?.finish;
-    if (finish && finish !== 'unknown') {
+    // busy 시작 시점의 마지막 assistant와 "다른" assistant가 terminal finish를 가질 때만 해제
+    if (finish && TERMINAL.has(finish) && lastAssistant!.id !== busyAssistantRef.current) {
       setBusy(false);
       if (projectDir) refreshSessions(projectDir);
     }
@@ -169,6 +179,8 @@ export default function App() {
         return;
       }
       setBusy(true);
+      busyAssistantRef.current =
+        [...messagesRef.current].reverse().find((m) => m.type === 'assistant')?.id ?? null;
 
       try {
         const sid = await ensureSession();
@@ -189,6 +201,22 @@ export default function App() {
   const showChrome = useCallback(
     () => window.codebridge.showChrome(),
     [],
+  );
+
+  const deleteSession = useCallback(
+    async (id: string) => {
+      const ok = await api.deleteSession(id);
+      if (!ok) {
+        console.warn('[codebridge] 대화 삭제 실패:', id);
+        return;
+      }
+      if (activeId === id) {
+        setActiveId(null);
+        setMessages([]);
+      }
+      if (projectDir) refreshSessions(projectDir);
+    },
+    [activeId, projectDir, refreshSessions],
   );
 
   const answerQuestion = useCallback(
@@ -324,6 +352,7 @@ export default function App() {
             onPickProject={pickProject}
             probe={probe}
             onShowChrome={showChrome}
+            onDelete={deleteSession}
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">

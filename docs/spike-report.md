@@ -363,3 +363,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `cargo test --release` 54/54, frontend build OK, settings 토글·로그·IPC E2E 통과.
 - CI/release 녹색 유지 시 v0.6.0을 latest로 설치 교체.
 - 테스트 세션 4건(검증용) 정리 완료. 사용자 환경의 이전 테스트 대화 일부는 보존됨.
+
+## v0.7.0 — 검증 + 인수인계 체인 실동작 (2026-11-13)
+
+**Phase A(검증)에서 드러난 결정적 버그들**
+
+- **format! `{}` → named 인자 혼용 바인딩 버그 (핸드오버 입력 JS 깨짐의 근본 원인)**: `format!(..., sel = ..., text = ...)`에서 무명 `{}`는 정의 순서대로 첫 named 인자(selector)에 바인딩된다. 결과: `catch (e) "textarea#..."` → SyntaxError("Unexpected string", line 7 col 32, script_id 2xx) → 새 채팅 입력 불가. `{{}}`로 수정. **교훈**: format!에서 named 인자와 무명 `{}`를 섞지 말 것.
+- **숨김 창(SW_HIDE)에서 갓 생성된 채팅 페이지의 execCommand 입력 실패**: `{{` 이스케이프 수정 후에도 3회 재시도 모두 실패 → 삽입 후 컴포저 에코 확인 + 실패 시 `ClipboardEvent('paste')`/직접 세팅+InputEvent로 폴백하는 3단계 구조로 변경. 이후 **새 채팅 회전 + pack 전송 성공 (chain_ok)**.
+- **js_string U+2028/U+2029**: serde_json이 이스케이프하지 않는 JS 줄 종결자를 문자열에 그대로 담으면 파서가 문자열을 두 줄로 나누며 SyntaxError. `\u2028`/`\u2029`로 치환.
+- **UI busy 해제 판정 (질문 카드 답변 직후 화면 멈춤)**: 이전 assistant의 `stop`이 목록에 남아 있고 tool-calls도 종료로 처리되어, 답을 보낸 직후 busy가 곧바로 꺼져 폴링 루프가 멈춘 것이 근본 원인. "이전과 다른 assistant + terminal finish"에서만 해제하도록 수정 + `isLastAssistantDone` 동일 기준으로 통일. (참고: 백그라운드/occluded 창은 Chromium의 타이머 스로틀링으로 갱신이 느려질 수 있음 — 앱이 포커스일 때는 정상)
+
+**검증 결과 (CDP + 전용 Chrome, dev 인스턴스)**
+
+- 질문 카드 E2E: 렌더 → "divide" 클릭 → TOOL glob 호출 → 두 번째 질문 카드(답 대기) — **새로고침 없이 렌더 확인** (기존에 reload 필요했던 원인 = 위 busy 버그).
+- Gemini: 로그인 상태(gemini.google.com/app, composer true) 확인, "안녕" → TOOL question 호출 → 카드 렌더.
+- 인수인계: tray "지금 인수인계"(또는 `/v1/handover/trigger`) → 원 응답 유지 → same_site_new_chat 회전 → handover pack 전송 → `handover_started → same_site_ok → chain_ok`. 전용 Chrome이 새 대화 `/c/<id>`로 이동함을 probe로 확인.
+- danger_shell: ChatGPT가 파괴적 `TOOL shell`을 스스로는 절대 내지 않음을 3회 재확인 → 실사용 삭제 확인은 question 카드 경로로 도달. danger_shell 변환은 파서 단위 테스트로 유지.
+- CI testpages-check: 10s→15s 대기 + kill 후 1회 재시도 + --no-sandbox. 로컬 7/7 통과.
+- 새 기능: 사이드바 세션 삭제(휴지통, 2단계 인라인 확인) E2E 확인.
+- eval_str 실패 시 스크립트 전문을 temp_dir/opencode/eval_str_failed.js에 덤프 (디버깅 편의).
