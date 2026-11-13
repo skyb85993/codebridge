@@ -68,6 +68,7 @@ jobs:
 
       - name: Build frontend
         run: npm run build:frontend
+        working-directory: desktop
 
       - name: Render smoke check
         run: node scripts/smoke-check.mjs
