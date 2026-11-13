@@ -242,6 +242,27 @@ pub async fn show_chrome(
     }
 }
 
+/// 전용 Chrome을 다시 숨깁니다 (보이기로 꺼낸 창/팝업을 화면에서 치움).
+pub async fn hide_chrome(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let pid = q
+        .get("pid")
+        .and_then(|s| s.parse::<u32>().ok())
+        .or_else(automation::engine::Engine::dedicated_chrome_pid);
+    match pid {
+        Some(pid) => {
+            let n = super::automation::winhide::hide_chrome_windows_for_pid(pid);
+            Json(json!({
+                "ok": n > 0,
+                "action": if n > 0 { "hidden" } else { "no-window" },
+                "pid": pid,
+            }))
+        }
+        None => Json(json!({ "ok": false, "action": "not-running" })),
+    }
+}
+
 /// 현재 tool 턴의 결과에서 실패 징후를 찾는다. opencode tool 결과는 JSON이거나 일반 텍스트.
 fn tool_text_looks_failed(text: &str) -> bool {
     let lower = text.to_lowercase();

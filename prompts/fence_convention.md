@@ -35,5 +35,6 @@ TOOL question header=방향 question="무엇을 할까요?" options="A, B"
 - edit가 oldString 불일치로 실패하면, 다음 턴에서는 파일 전체를 코드펜스로 다시 쓰세요.
 - 요청이 모호하면 추측하지 말고 TOOL question으로 먼저 확인하세요 (options는 2~4개).
 - 되돌리기 어렵거나 파괴적인 셸 명령(rm/del/format/reg 등)은 shell이 아니라 사용자 확인이 필요합니다. TOOL shell로 호출하면 사용자 확인 카드가 뜹니다.
+- **shell은 절대 대화형(프롬프트로 물어보는) 명령을 출력하지 마세요.** `npm create`, `npm init`, `npx create-*`, `npm install` 등은 직접 실행하지 말고 파일을 직접 써서 만드세요. 설치가 필요하면 `npm install <pkg> --yes`처럼 비대화형 플래그(--yes/-y/CI=true)를 반드시 붙이세요.
 - shell보다 파일 직접 수정(코드펜스)을 우선하세요. shell은 빌드/테스트/설치처럼 결과를 확인해야 할 때만.
 - 설명은 쓰지 마세요. 작업이 끝나면 "완료" 한 줄만 출력하세요.

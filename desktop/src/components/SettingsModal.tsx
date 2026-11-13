@@ -14,6 +14,7 @@ import {
   Check,
   Trash2,
   Download,
+  EyeOff,
 } from 'lucide-react';
 import { MODELS, type ModelID } from '../api';
 import type { HostSettings, HostSettingsPatch } from '../ipc';
@@ -182,6 +183,16 @@ export default function SettingsModal({
     try {
       const res = await window.codebridge.showChrome();
       flash(res.ok ? '전용 Chrome을 화면에 표시했습니다.' : (res.error ?? 'Chrome을 열지 못했습니다.'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const hideChrome = async () => {
+    setBusy('hide-chrome');
+    try {
+      const res = await window.codebridge.hideChrome();
+      flash(res.ok ? '전용 Chrome을 숨겼습니다.' : (res.error ?? '숨기지 못했습니다.'));
     } finally {
       setBusy(null);
     }
@@ -602,7 +613,11 @@ export default function SettingsModal({
               <div className="mt-1.5 flex flex-wrap items-center gap-2">
                 <button onClick={showChrome} className={actionBtn} disabled={busy === 'chrome'}>
                   <Chrome size={12} />
-                  전용 Chrome 보이기
+                  보이기
+                </button>
+                <button onClick={hideChrome} className={actionBtn} disabled={busy === 'hide-chrome'}>
+                  <EyeOff size={12} />
+                  숨기기
                 </button>
                 <button onClick={recheckLogin} className={actionBtn} disabled={busy === 'probe'}>
                   <ShieldCheck size={12} />

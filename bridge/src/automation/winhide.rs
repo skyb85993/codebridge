@@ -29,6 +29,24 @@ mod imp {
         fn GetWindowThreadProcessId(h_wnd: HWND, lp_dw_process_id: *mut u32) -> u32;
         fn ShowWindow(h_wnd: HWND, n_cmd_show: i32) -> i32;
         fn SetWindowPos(h_wnd: HWND, h_wnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
+        fn GetClassNameW(h_wnd: HWND, lp_class_name: *mut u16, n_max_count: i32) -> i32;
+    }
+
+    static TARGET_PID: AtomicU32 = AtomicU32::new(0);
+    static ACTION: AtomicU32 = AtomicU32::new(0); // 0=hide 1=show
+    static DONE_COUNT: AtomicU32 = AtomicU32::new(0);
+    // hide/show 호출이 겹쳐도 EnumWindows 사이에 전역 상태가 바뀌지 않도록 직렬화한다
+    static RUN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const CLASS_MAIN_WINDOW: &str = "Chrome_WidgetWin_1";
+
+    fn class_matches(hwnd: HWND, target: &str) -> bool {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if len <= 0 {
+            return false;
+        }
+        buf[..len as usize] == target.encode_utf16().collect::<Vec<u16>>()[..]
     }
 
     #[link(name = "kernel32")]
@@ -38,12 +56,6 @@ mod imp {
         fn CloseHandle(h_object: HANDLE) -> i32;
     }
 
-    static TARGET_PID: AtomicU32 = AtomicU32::new(0);
-    static ACTION: AtomicU32 = AtomicU32::new(0); // 0=hide 1=show
-    static DONE_COUNT: AtomicU32 = AtomicU32::new(0);
-    // hide/show 호출이 겹쳐도 EnumWindows 사이에 전역 상태가 바뀌지 않도록 직렬화한다
-    static RUN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     extern "system" fn enum_proc(hwnd: HWND, _lparam: isize) -> i32 {
         let mut pid: u32 = 0;
         let tid = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
@@ -52,6 +64,7 @@ mod imp {
         }
         match ACTION.load(Ordering::Relaxed) {
             0 => {
+                // 숨길 때는 해당 Chrome 프로세스의 모든 보이는 창을 숨긴다 (팝업 포함)
                 if unsafe { IsWindowVisible(hwnd) } != 0 {
                     unsafe {
                         ShowWindow(hwnd, SW_HIDE);
@@ -60,7 +73,10 @@ mod imp {
                 }
             }
             _ => {
-                // 숨김 해제 + 화면 안으로 위치 이동 (x=48, y=48, 1100x800)
+                // 보일 때는 메인 창만 — WidgetWin_0(팝업)은 그냥 둔다 (PoC: 이상한 창 방지)
+                if !class_matches(hwnd, CLASS_MAIN_WINDOW) {
+                    return TRUE;
+                }
                 unsafe {
                     ShowWindow(hwnd, SW_SHOW);
                     SetWindowPos(hwnd, HWND_TOP, 48, 48, 1100, 800, SWP_SHOWWINDOW | SWP_NOSIZE);

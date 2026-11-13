@@ -480,3 +480,20 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 **검증**
 
 - `cargo test --release` 54/54, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
+## v0.13.0 — 프로젝트 목록 + Chrome 툴바/팝업 제어 + 셸 가이드 강화 (2026-11-13)
+
+**버그 수정**
+
+- **show_chrome → WidgetWin_1만 표시**: 전용 Chrome을 보일 때 메인 창(Chrome_WidgetWin_1)만 꺼내고 `Chrome_WidgetWin_0`(팝업 창, 제목 없는 유령 창)는 숨김 상태로 둔다 → "이상한 창" 제거.
+- **비대화형 셸 가이드**: `npm create vite@latest` 류 대화형 명령을 모델이 선택해 루프가 멎는 일을 막기 위해 — fence_convention 규칙에 "대화형 명령을 출력하지 말 것 (npm create/init/npx create-*), 파일 직접 작성, 설치 시 --yes/CI=true 강제" 추가.
+
+**기능**
+
+- **프로젝트 목록 사이드바 재구성**: ChatGPT "프로젝트" 스타일 리스트 — 최대 5개 최근 폴더, hover로 제거(X), 현재 프로젝트는 "현재" 배지, 상단 `+`(폴더 추가).
+- **설정에 "숨기기" 버튼** (보이기 옆): `/v1/chrome/hide` IPC → bridge `hide_chrome` → winhide `hide_chrome_windows_for_pid`. settings에 별도 켜기 없음 — 클릭 즉시 적용.
+- **ipc.d.ts/preload/ipc** 신규 `hideChrome` 노출.
+
+**프로세스**
+
+- lockfile은 전체 문자열 치환 금지 — v0.9.0/v0.10.0에서 `retry@0.12.0`, xmldom, temp 범위가 각각 0.13.0으로 밀려 나갔다. 앱 버전(코드 2곳)만 정밀 치환 + `git show v<이전>:package-lock.json`과 diff로 검증한다.

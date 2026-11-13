@@ -705,6 +705,22 @@ ipcMain.handle('app:showChrome', async () => {
   }
 });
 
+// 전용 Chrome을 다시 숨긴다 (보이기로 꺼낸 창을 화면에서 치움)
+ipcMain.handle('app:hideChrome', async () => {
+  try {
+    let pid = readChromePid();
+    if (!pid) {
+      pid = findDedicatedChromePidByWmi();
+    }
+    const path = pid ? `/v1/chrome/hide?pid=${pid}` : '/v1/chrome/hide';
+    const r = await httpGetJson(BRIDGE_PORT, path, 10000);
+    appendLog('boot', `[boot] hideChrome -> ${JSON.stringify(r.json || {})}\n`);
+    return r.json || { ok: false, error: 'bridge returned no body' };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 // 사용자가 "위험한 명령 확인 카드"에서 승인한 셸 명령을 앱이 직접 실행한다.
 // 브릿지/웹챗을 다시 부르지 않고 PowerShell에서 실행하고 결과를 돌려준다.
 ipcMain.handle('app:runApprovedShell', async (_e, command) => {

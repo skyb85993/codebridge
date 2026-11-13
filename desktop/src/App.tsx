@@ -29,6 +29,7 @@ export default function App() {
   const [exportNote, setExportNote] = useState<string | null>(null);
   const exportNoteTimer = useRef<number | undefined>(undefined);
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? null,
@@ -55,6 +56,7 @@ export default function App() {
       .then((s) => {
         setModel(s.model);
         setOnboarded(s.onboarded === true);
+        setRecentProjects(s.recentProjects ?? []);
       })
       .catch(() => {
         setOnboarded(false);
@@ -68,7 +70,12 @@ export default function App() {
   // ---------- 프로젝트 없으면 전체 화면 폴더 선택 ----------
   const pickProject = useCallback(async () => {
     const dir = await window.codebridge.pickProject();
-    if (dir) setProjectDir(dir);
+    if (dir) {
+      setProjectDir(dir);
+      setRecentProjects((prev) =>
+        [dir, ...prev.filter((p) => p && p !== dir)].slice(0, 5),
+      );
+    }
   }, []);
 
   // ---------- 프로젝트별 세션 로드 ----------
@@ -247,10 +254,6 @@ export default function App() {
     [],
   );
 
-  const openProjectFolder = useCallback(() => {
-    void window.codebridge.openProjectFolder();
-  }, []);
-
   const flashNote = useCallback((msg: string) => {
     setExportNote(msg);
     if (exportNoteTimer.current) window.clearTimeout(exportNoteTimer.current);
@@ -308,6 +311,11 @@ export default function App() {
     const res = await window.codebridge.switchProject(dir);
     if (res.ok && res.projectDir) {
       setProjectDir(res.projectDir);
+      // MRU를 최신화 (스위치 성공 경로에서도 setSettings를 통해 갱신)
+      setRecentProjects((prev) => {
+        const rest = prev.filter((p) => p && p !== res.projectDir);
+        return [res.projectDir as string, ...rest].slice(0, 5);
+      });
       flashNote(`프로젝트를 전환했습니다 — ${res.projectDir}`);
     } else {
       flashNote(res.error ?? '전환에 실패했습니다.');
@@ -316,6 +324,7 @@ export default function App() {
 
   const removeRecentProject = useCallback(async (dir: string) => {
     await window.codebridge.removeRecentProject(dir);
+    setRecentProjects((prev) => prev.filter((p) => p !== dir));
   }, []);
 
   // 전체 대화 일괄 삭제 (현재 프로젝트 기준)
@@ -576,7 +585,9 @@ export default function App() {
             probe={probe}
             onShowChrome={showChrome}
             onDelete={deleteSession}
-            onOpenProjectFolder={openProjectFolder}
+            onSwitchProject={switchProject}
+            onRemoveRecentProject={removeRecentProject}
+            recentProjects={recentProjects}
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">

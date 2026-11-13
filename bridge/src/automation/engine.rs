@@ -500,6 +500,15 @@ impl Engine {
         let _ = std::fs::write(Self::dedicated_chrome_pid_path(), pid.to_string());
     }
 
+    /// 전용 Chrome의 현재 pid를 돌려준다 (파일 존재 + 프로세스 살아있음 확인).
+    /// 없거나 죽었으면 None.
+    pub fn dedicated_chrome_pid() -> Option<u32> {
+        std::fs::read_to_string(Self::dedicated_chrome_pid_path())
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|pid| super::winhide::process_alive(*pid))
+    }
+
     /// 전용 Chrome이 CDP에 응답하지 않으면 그때 띄운다 (지연 실행).
     async fn spawn_chrome(&self, site: Site, hide: bool) -> Result<u32, EngineError> {
         let exe = chrome_exe().ok_or_else(|| {

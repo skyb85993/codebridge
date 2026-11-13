@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FolderOpen, Folder, MessageSquarePlus, Search, Circle, Trash2, Check, X, TextCursorInput } from 'lucide-react';
+import {
+  Folder,
+  FolderPlus,
+  MessageSquarePlus,
+  Search,
+  Circle,
+  Trash2,
+  Check,
+  X,
+  TextCursorInput,
+} from 'lucide-react';
 import { api, SessionInfo, formatRelTime } from '../api';
 import type { HostProbe } from '../ipc';
 
@@ -13,7 +23,10 @@ interface SidebarProps {
   onRename: (id: string, title: string) => void;
   probe: HostProbe | null;
   onDelete: (id: string) => void | Promise<void>;
-  onOpenProjectFolder: () => void;
+  onPickProject: () => void;
+  onSwitchProject: (dir: string) => void;
+  onRemoveRecentProject: (dir: string) => void;
+  recentProjects: string[];
   onShowChrome: () => Promise<{
     ok: boolean;
     action?: string;
@@ -29,10 +42,12 @@ export default function Sidebar({
   onNew,
   projectDir,
   onPickProject,
+  onSwitchProject,
+  onRemoveRecentProject,
+  recentProjects,
   probe,
   onDelete,
   onRename,
-  onOpenProjectFolder,
   onShowChrome,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
@@ -105,7 +120,7 @@ export default function Sidebar({
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-lineSoft bg-panel/70 backdrop-blur-xl">
-      {/* 프로젝트 */}
+      {/* 프로젝트 — ChatGPT식 프로젝트 리스트 */}
       <div className="px-4 pb-3 pt-4">
         <div className="mb-1.5 flex items-center justify-between">
           <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-dim">
@@ -113,25 +128,58 @@ export default function Sidebar({
           </span>
           <button
             className="rounded-md p-1 text-dim transition-colors hover:bg-panel2 hover:text-text"
-            title="프로젝트 폴더 열기"
-            onClick={onOpenProjectFolder}
-          >
-            <Folder size={13} />
-          </button>
-          <button
-            className="rounded-md p-1 text-dim transition-colors hover:bg-panel2 hover:text-text"
-            title="프로젝트 폴더 변경…"
+            title="새 프로젝트 폴더 추가…"
             onClick={onPickProject}
           >
-            <FolderOpen size={13} />
+            <FolderPlus size={13} />
           </button>
         </div>
-        <div
-          className="cursor-pointer truncate rounded-lg border border-lineSoft bg-panel2 px-2.5 py-1.5 font-mono text-[11px] text-text transition-colors hover:border-line"
-          title={projectDir ?? '프로젝트 폴더 선택 필요'}
-          onClick={onPickProject}
-        >
-          {projectDir ? projectDir.split('\\').pop() || projectDir : '폴더를 선택하세요'}
+        <div className="nice-scroll -mr-1 max-h-36 overflow-y-auto pr-1">
+          {recentProjects.length === 0 && (
+            <button
+              onClick={onPickProject}
+              className="mb-1 flex w-full items-center gap-2 rounded-lg border border-dashed border-lineSoft px-2.5 py-2 text-left text-[11px] text-dim transition-colors hover:border-line hover:text-text"
+            >
+              <Folder size={13} className="shrink-0" />
+              폴더를 선택하세요
+            </button>
+          )}
+          {recentProjects.map((dir) => {
+            const isCurrent = dir === projectDir;
+            const name = dir.split('\\').pop() || dir;
+            return (
+              <div
+                key={dir}
+                className={`group relative mb-1 flex items-center overflow-hidden rounded-lg transition-colors ${
+                  isCurrent ? 'border border-accent/30 bg-panel2' : 'hover:bg-panel2'
+                }`}
+              >
+                <button
+                  onClick={() => !isCurrent && onSwitchProject(dir)}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left"
+                  title={dir}
+                >
+                  <Folder size={13} className="shrink-0 text-dim" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text">
+                    {name}
+                  </span>
+                  {isCurrent && (
+                    <span className="ml-1 shrink-0 rounded-md bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
+                      현재
+                    </span>
+                  )}
+                </button>
+                <button
+                  className="mr-1 grid h-6 w-6 shrink-0 place-items-center rounded-md text-dim opacity-0 transition-all hover:bg-red-400/15 hover:text-red-300 focus:opacity-100 group-hover:opacity-100"
+                  title="프로젝트 목록에서 제거"
+                  aria-label="프로젝트 목록에서 제거"
+                  onClick={() => onRemoveRecentProject(dir)}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
