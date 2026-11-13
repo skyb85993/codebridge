@@ -17,6 +17,7 @@ const {
   nativeImage,
   ipcMain,
   shell,
+  Notification,
 } = require('electron');
 let autoUpdater = null;
 try {
@@ -93,6 +94,7 @@ const SETTINGS_DEFAULTS = {
   autoCheckUpdates: true,        // 실행 시 자동 업데이트 확인
   dangerConfirm: true,           // 위험 명령 확인 카드 (브릿지에 CODEBRIDGE_DANGER_CONFIRM로 전달)
   handoverLimit: 25,             // 인수인계 소프트 리밋 (브릿지에 CODEBRIDGE_HANDOVER_LIMIT로 전달)
+  chromeAlwaysVisible: false,    // 전용 Chrome을 항상 화면에 표시 (CODEBRIDGE_CHROME_KEEP_VISIBLE로 전달)
 };
 function getSettings() {
   return { ...SETTINGS_DEFAULTS, ...readSettings() };
@@ -166,6 +168,7 @@ function spawnBridge(cwd) {
     CODEBRIDGE_CHROME_PROFILE: CHROME_PROFILE,
     CODEBRIDGE_DANGER_CONFIRM: settings.dangerConfirm ? '1' : '0',
     CODEBRIDGE_HANDOVER_LIMIT: String(settings.handoverLimit),
+    CODEBRIDGE_CHROME_KEEP_VISIBLE: settings.chromeAlwaysVisible ? '1' : '0',
   };
   bridgeProc = spawn(BRIDGE_EXE, [], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   bridgeProc.stdout.pipe(stream);
@@ -636,12 +639,16 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
     const n = Number(patch.handoverLimit);
     if (Number.isInteger(n) && [10, 25, 50].includes(n)) next.handoverLimit = n;
   }
+  if (typeof patch.chromeAlwaysVisible === 'boolean') next.chromeAlwaysVisible = patch.chromeAlwaysVisible;
   if (patch.projectDir != null) {
     return { ok: false, error: 'projectDir은 폴더 선택으로만 변경할 수 있습니다.' };
   }
   writeSettings(next);
   // 브릿지 env가 필요한 값은 브릿지만 즉시 재시작 (opencode/세션은 유지)
-  const bridgeAffected = cur.dangerConfirm !== next.dangerConfirm || cur.handoverLimit !== next.handoverLimit;
+  const bridgeAffected =
+    cur.dangerConfirm !== next.dangerConfirm ||
+    cur.handoverLimit !== next.handoverLimit ||
+    cur.chromeAlwaysVisible !== next.chromeAlwaysVisible;
   if (bridgeAffected && projectDir) {
     appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit})\n`);
     spawnBridge(projectDir);
@@ -706,6 +713,40 @@ ipcMain.handle('app:restartBridge', async () => {
   if (!projectDir) return { ok: false, error: '프로젝트 폴더가 선택되지 않았습니다.' };
   spawnBridge(projectDir);
   return { ok: true };
+});
+
+// 렌더러 알림 — 질문 카드 도착/작업 완료 시 토스트. 클릭하면 창을 띄운다.
+ipcMain.handle('app:notify', (_e, payload) => {
+  try {
+    if (!Notification.isSupported()) return { ok: false, error: '알림 미지원' };
+    const title = (payload && typeof payload.title === 'string' && payload.title) || 'CodeBridge';
+    const body = (payload && typeof payload.body === 'string' && payload.body) || '';
+    const n = new Notification({ title, body, silent: false });
+    n.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    n.show();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 브릿지+opencode 서비스 전체 재시작 (진행 중인 요청은 중단됨 — UI에서 경고)
+ipcMain.handle('app:restartServices', async () => {
+  if (!projectDir) return { ok: false, error: '프로젝트 폴더가 선택되지 않았습니다.' };
+  try {
+    const ok = await startServices(projectDir);
+    appendLog('settings', `[settings] services restarted (ok=${ok})\n`);
+    return { ok };
+  } catch (e) {
+    appendLog('settings', `[settings] services restart failed: ${e}\n`);
+    return { ok: false, error: String(e) };
+  }
 });
 
 function ocFetchJson(pathname, init) {

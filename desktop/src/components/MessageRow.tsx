@@ -6,6 +6,7 @@ import QuestionCard, { type QuestionMarker } from './QuestionCard';
 
 const MARKER_PREFIX = 'CODEBRIDGE_QUESTION:';
 const TOOL_FAILED_PREFIX = 'codebridge:tool-failed:';
+const TOOL_LINE_RE = /^TOOL\s+(read|glob|grep|edit|shell|websearch|question)\b/i;
 
 function parseQuestionLine(line: string): QuestionMarker | null {
   const t = line.trim();
@@ -60,6 +61,14 @@ export default function MessageRow({
                 if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
                   inFence = !inFence;
                   buffer += line + '\n';
+                  continue;
+                }
+                // TOOL 원시 라인은 숨긴다 — ToolCallChip/QuestionCard가 같은 내용을 렌더링한다
+                if (!inFence && TOOL_LINE_RE.test(trimmed)) {
+                  continue;
+                }
+                // END_TOOL 블록 닫는 라인도 함께 숨긴다
+                if (!inFence && trimmed === 'END_TOOL') {
                   continue;
                 }
                 // 도구 실패 배너 라인 (펜스 안에서는 텍스트로 유지)

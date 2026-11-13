@@ -382,3 +382,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - CI testpages-check: 10s→15s 대기 + kill 후 1회 재시도 + --no-sandbox. 로컬 7/7 통과.
 - 새 기능: 사이드바 세션 삭제(휴지통, 2단계 인라인 확인) E2E 확인.
 - eval_str 실패 시 스크립트 전문을 temp_dir/opencode/eval_str_failed.js에 덤프 (디버깅 편의).
+
+## v0.8.0 — UX·안정성 + 인수인계 이중 전송 제거 (2026-11-13)
+
+**Phase A에서 사용자 지적으로 확정된 문제**
+
+- **채팅 본문에 raw `TOOL …` 라인이 그대로 보이던 문제** — 모델이 `TOOL question header=...` 같은 도구 프로토콜 텍스트를 대화에 그대로 찍는 것을 파서가 그대로 표시했다. 이제 `^TOOL\s+(도구명)\b` 라인은 텍스트 렌더에서 제외 (ToolCallChip/QuestionCard가 같은 내용을 렌더하므로 정보 손실 없음, 코드 펜스 안은 유지).
+- **React 에러 바운더리 부재** — 렌더 크래시 = 앱 전체 흰 화면. `components/ErrorBoundary.tsx` 신설, `main.tsx`에서 감싸서 복구 화면 제공.
+- **수동 인수인계 이중 전송** — "지금 인수인계" 트리거 시 원본 요청을 먼저 보내고 pack을 또 실행해 무료 웹챗을 2배 소비하고 원본 응답은 체인 성공 시 버려지던 구조. 이제 트리거 감지를 전송 이전으로 옮겨 forced 시 원본 전송을 건너뛰고 pack을 바로 체인에 투입. 체인 전부 실패 시 원본 요청으로 폴백. 체인 코드를 `run_handover_chain`으로 추출해 자동(limit_hit)/수동 경로가 같은 구현 공유.
+
+**기능**
+
+- 질문 카드 도착/작업 완료 Windows 토스트 (`app:notify`, 숨겨진 창에서만, 클릭하면 창 표시). 렌더러가 messages 변경을 보고 `document.hidden`일 때만 발화 (중복 알림 방지 `notifySeenRef`).
+- 설정: "전용 Chrome 항상 보이기" (`chromeAlwaysVisible` → `CODEBRIDGE_CHROME_KEEP_VISIBLE` → 브릿지가 숨김 생략, 다음 기동부터), "서비스 전체 재시작" (bridge+opencode, 진행 중 요청 중단됨), "이 모델을 지금 대화에도 적용" (activeId 있을 때만 표시, 기존 changeModel 경로 재사용).
+- 브릿지 재시작 트리거에 chromeAlwaysVisible 변경도 포함.
+
+**사용자가 제기한 문제와 대응**
+
+- "오픈코드 창이 자꾸 꺼지더라" — 원인은 **에이전트(본인)가 개발 검증마다 `Get-Process | ? ProcessName -eq 'opencode' | Stop-Process`로 시스템 전체의 opencode 프로세스를 강제 종료**한 것 (오늘만 boots 96회). 코드브릿지 증거상 앱 자발적 종료 로그는 없음. 이후: 경로 기반 선별 kill만 사용, 앱 강제 종료 없음, 실검증은 CI + 마지막 1회 재시작.
+- CI testpages-check red run (docs 커밋) — `gh run rerun --failed` 트리거.

@@ -22,6 +22,8 @@ interface SettingsModalProps {
   onClose: () => void;
   onPickProject: () => Promise<void>;
   onDefaultModel: (m: ModelID) => void;
+  onApplyModelToCurrent?: (m: ModelID) => void;
+  canApplyModelToCurrent?: boolean;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -77,6 +79,8 @@ export default function SettingsModal({
   onClose,
   onPickProject,
   onDefaultModel,
+  onApplyModelToCurrent,
+  canApplyModelToCurrent,
 }: SettingsModalProps) {
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -211,6 +215,13 @@ export default function SettingsModal({
     setBusy(null);
   };
 
+  const restartServices = async () => {
+    setBusy('services');
+    const res = await window.codebridge.restartServices();
+    flash(res.ok ? '서비스를 전체 재시작했습니다.' : (res.error ?? '재시작 실패'));
+    setBusy(null);
+  };
+
   const openLogs = () => {
     window.codebridge.openLogsFolder();
   };
@@ -291,6 +302,17 @@ export default function SettingsModal({
                   </div>
                 }
               />
+              {canApplyModelToCurrent && (
+                <button
+                  onClick={() => {
+                    onApplyModelToCurrent?.(settings.model);
+                    flash('지금 대화에도 적용했습니다.');
+                  }}
+                  className="mt-1 text-[10.5px] font-medium text-cyan-300 transition-colors hover:text-cyan-200 hover:underline"
+                >
+                  이 모델을 지금 대화에도 적용 →
+                </button>
+              )}
             </Section>
 
             {/* 승인 */}
@@ -372,7 +394,23 @@ export default function SettingsModal({
 
             {/* 전용 Chrome */}
             <Section title="전용 Chrome (로그인)">
-              <div className="flex flex-wrap items-center gap-2">
+              <Row
+                label="전용 Chrome 항상 보이기"
+                desc="로그인/캡차가 잦으면 켜세요. 다음 Chrome 기동부터 적용됩니다."
+                control={
+                  <Toggle
+                    on={settings.chromeAlwaysVisible}
+                    onChange={(v) =>
+                      patch(
+                        { chromeAlwaysVisible: v },
+                        v ? '전용 Chrome이 화면에 보입니다.' : '전용 Chrome이 숨겨집니다.',
+                      )
+                    }
+                    disabled={busy === 'save'}
+                  />
+                }
+              />
+              <div className="mt-1.5 flex flex-wrap items-center gap-2">
                 <button onClick={showChrome} className={actionBtn} disabled={busy === 'chrome'}>
                   <Chrome size={12} />
                   전용 Chrome 보이기
@@ -419,6 +457,14 @@ export default function SettingsModal({
                   <RotateCw size={12} className={busy === 'bridge' ? 'animate-spin' : ''} />
                   브릿지 재시작
                 </button>
+                <button
+                  onClick={restartServices}
+                  className={`${actionBtn} border-amber-400/30 text-amber-300 hover:border-amber-400/50`}
+                  disabled={busy === 'services'}
+                >
+                  <RotateCw size={12} className={busy === 'services' ? 'animate-spin' : ''} />
+                  서비스 전체 재시작
+                </button>
                 <button onClick={openReleases} className={actionBtn}>
                   <ExternalLink size={12} />
                   릴리스 페이지
@@ -426,6 +472,7 @@ export default function SettingsModal({
               </div>
               <p className="mt-1 text-[9.5px] leading-snug text-dim/70">
                 설정 변경(위험 명령 확인 / 스레드 한도)은 브릿지가 자동으로 재시작되어 바로 반영됩니다.
+                "서비스 전체 재시작"은 진행 중인 요청을 중단합니다.
               </p>
             </Section>
 

@@ -473,26 +473,65 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
     // 모델 id에 "gemini"가 포함되면 Gemini로 초기 사이트를 결정한다
     let site = automation::engine::Site::from_model(&req.model);
-    let outcome = match engine.send_and_await_site(&prompt, site).await {
-        Ok(o) => o,
-        Err(e) => automation::engine::SendOutcome {
-            text: format!(
-                "(브릿지 오류) {}에 보내지 못했습니다: {e}. Chrome(전용 프로필, CDP {})과 로그인 상태를 확인해 주세요.",
-                match site {
-                    automation::engine::Site::ChatGpt => "ChatGPT",
-                    automation::engine::Site::Gemini => "Gemini",
-                },
-                app.cfg.automation.cdp_port
-            ),
-            limit_hit: false,
-            code_blocks: Vec::new(),
-            truncated: false,
-        },
+
+    // 최신 user 메시지로 수동 인수인계 트리거 여부를 먼저 판정한다.
+    // (기존: 원본 요청을 먼저 보낸 뒤 체인을 또 보내 이중 소비되던 문제)
+    let latest_user_hoist = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(msg_tool_text)
+        .unwrap_or_default();
+    let manual_flag = app.manual_handover.swap(false, Ordering::SeqCst);
+    let forced_handover = manual_flag || latest_user_hoist.contains("지금 인수인계");
+
+    let (mut outcome, mut active_site) = if forced_handover && app.cfg.handover.mode == "auto" {
+        let snap = harness::flatten::snapshot(&workspace);
+        let tool_summary: String = req
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(msg_tool_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pack = automation::handover::build_pack(
+            &workspace_s,
+            &user_text(req),
+            &tool_summary,
+            &snap,
+        );
+        if archive_enabled {
+            arc.record("HANDOVER", &pack);
+        }
+        let fname = format!("handover-{id}.md");
+        if archive_enabled {
+            let saved = arc.write_artifact(&fname, &pack);
+            println!("[browser] handover pack saved to {saved:?} (site={site:?})");
+        } else {
+            println!("[browser] handover pack built in memory (archive off) (site={site:?})");
+        }
+        arc.log_handover_event(
+            "handover_started",
+            &format!("site={site:?} limit_hit=false manual=true msgs={}", req.messages.len()),
+        );
+        match run_handover_chain(&engine, app, &arc, site, &pack).await {
+            Ok(pair) => {
+                arc.log_handover_event("chain_ok", &format!("site={:?}", pair.1));
+                pair
+            }
+            Err(e) => {
+                arc.log_handover_event("chain_failed", &format!("{e} — 원본 요청으로 폴백"));
+                (send_normal(&engine, &prompt, site, app).await, site)
+            }
+        }
+    } else {
+        (send_normal(&engine, &prompt, site, app).await, site)
     };
+
     let mut raw = outcome.text;
     let mut blocks = outcome.code_blocks;
     let mut truncated = outcome.truncated;
-    let mut active_site = site;
 
     // 잘린 응답이면 "이어서 계속"을 1회 요청 (Phase 2, 쿼터 제한).
     // DOM 블록이든 raw든 truncated면 파일 승격은 하지 않는다.
@@ -512,21 +551,11 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     }
 
-    let latest_user = req
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(msg_tool_text)
-        .unwrap_or_default();
-
-    let manual_flag = app.manual_handover.swap(false, Ordering::SeqCst);
-    // 한도 배너 감지 또는 사용자 수동 트리거(현재 사용자 메시지에만) → 인수인계 팩 → 체인 순서로 재전송
-    let manual_handover = latest_user.contains("지금 인수인계") || manual_flag;
-    if outcome.limit_hit || manual_handover {
+    // 한도 배너 감지 시에만 자동 인수인계 (수동 트리거는 전송 전에 이미 처리됨)
+    if outcome.limit_hit {
         arc.log_handover_event(
             "handover_started",
-            &format!("site={active_site:?} limit_hit={} manual={} msgs={}", outcome.limit_hit, manual_flag, req.messages.len()),
+            &format!("site={active_site:?} limit_hit={} msgs={}", outcome.limit_hit, req.messages.len()),
         );
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
@@ -554,91 +583,17 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
 
         if app.cfg.handover.mode == "auto" {
-            let order = &app.cfg.handover.order;
-            println!("[browser] running handover chain: {order:?}");
-            let mut chain_done = false;
-            let mut last_err = String::new();
-            for step in order {
-                match step.as_str() {
-                    "same_site_new_chat" => {
-                        match engine.rotate_new_chat_site(active_site).await {
-                            Ok(_) => {
-                                arc.reset_counter();
-                                let retry =
-                                    format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
-                                match engine.send_and_await_site(&retry, active_site).await {
-                                    Ok(o2) => {
-                                        if o2.limit_hit {
-                                            arc.log_handover_event("same_site_limit", "새 채팅에서도 한도 유지");
-                                            last_err = "같은 사이트 새 채팅에서도 한도 유지".into();
-                                            continue; // 체인 다음 단계
-                                        }
-                                        raw = o2.text;
-                                        blocks = o2.code_blocks;
-                                        truncated = o2.truncated;
-                                        chain_done = true;
-                                        arc.log_handover_event("same_site_ok", "같은 사이트 새 채팅에서 이어감");
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        arc.log_handover_event("same_site_error", &e.to_string());
-                                        last_err = format!("재전송 실패: {e}");
-                                        continue;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                arc.log_handover_event("rotate_error", &e.to_string());
-                                last_err = format!("새 채팅 교체 실패: {e}");
-                                continue;
-                            }
-                        }
-                    }
-                    "gemini" => {
-                        match engine.rotate_new_chat_site(automation::engine::Site::Gemini).await {
-                            Ok(_) => {
-                                active_site = automation::engine::Site::Gemini;
-                                arc.reset_counter();
-                                let retry =
-                                    format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
-                                match engine.send_and_await_site(&retry, active_site).await {
-                                    Ok(o2) => {
-                                        if o2.limit_hit {
-                                            arc.log_handover_event("gemini_limit", "Gemini 한도 배너 — 체인 중단");
-                                            last_err = "Gemini 재전송에서도 한도 배너 — 체인 중단".into();
-                                            // 체인 종료: Gemini가 마지막 단계이므로 폴백 없음
-                                            break;
-                                        }
-                                        raw = o2.text;
-                                        blocks = o2.code_blocks;
-                                        truncated = o2.truncated;
-                                        chain_done = true;
-                                        arc.log_handover_event("gemini_ok", "Gemini로 이어감");
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        last_err = format!("Gemini 재전송 실패: {e}");
-                                        continue;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                last_err = format!("Gemini 새 채팅 교체 실패: {e}");
-                                arc.log_handover_event("gemini_rotate_error", &e.to_string());
-                                continue;
-                            }
-                        }
-                    }
-                    other => {
-                        last_err = format!("미지의 order 항목: {other}");
-                    }
+            match run_handover_chain(&engine, app, &arc, active_site, &pack).await {
+                Ok((o2, site2)) => {
+                    raw = o2.text;
+                    blocks = o2.code_blocks;
+                    truncated = o2.truncated;
+                    active_site = site2;
+                    arc.log_handover_event("chain_ok", &format!("site={site2:?}"));
                 }
-            }
-            if !chain_done {
-                arc.log_handover_event("chain_failed", &last_err);
-                raw.push_str(&format!("\n\n(인수인계 체인 실패: {last_err})"));
-            } else {
-                arc.log_handover_event("chain_ok", &format!("site={active_site:?}"));
+                Err(e) => {
+                    raw.push_str(&format!("\n\n(인수인계 체인 실패: {e})"));
+                }
             }
         }
     }
@@ -735,4 +690,111 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }))
         .into_response()
     }
+}
+
+/// 일반 전송 한 번을 정규화된 SendOutcome으로 돌려준다.
+/// 실패(Chrome 없음 등)도 문자열 응답으로 변환되므로 Err 없이 반환된다.
+async fn send_normal(
+    engine: &automation::engine::Engine,
+    prompt: &str,
+    site: automation::engine::Site,
+    app: &AppState,
+) -> automation::engine::SendOutcome {
+    match engine.send_and_await_site(prompt, site).await {
+        Ok(o) => o,
+        Err(e) => automation::engine::SendOutcome {
+            text: format!(
+                "(브릿지 오류) {}에 보내지 못했습니다: {e}. Chrome(전용 프로필, CDP {})과 로그인 상태를 확인해 주세요.",
+                match site {
+                    automation::engine::Site::ChatGpt => "ChatGPT",
+                    automation::engine::Site::Gemini => "Gemini",
+                },
+                app.cfg.automation.cdp_port
+            ),
+            limit_hit: false,
+            code_blocks: Vec::new(),
+            truncated: false,
+        },
+    }
+}
+
+/// 인수인계 체인 (same_site_new_chat → gemini). 성공 시 (응답, 해당 사이트).
+/// 전부 실패하면 Err(마지막 오류)를 반환하고 호출자가 폴백을 결정한다.
+async fn run_handover_chain(
+    engine: &automation::engine::Engine,
+    app: &AppState,
+    arc: &archive::Archive,
+    site: automation::engine::Site,
+    pack: &str,
+) -> Result<(automation::engine::SendOutcome, automation::engine::Site), String> {
+    let order = &app.cfg.handover.order;
+    println!("[browser] running handover chain: {order:?}");
+    let mut last_err = String::new();
+    for step in order {
+        match step.as_str() {
+            "same_site_new_chat" => {
+                match engine.rotate_new_chat_site(site).await {
+                    Ok(_) => {
+                        arc.reset_counter();
+                        let retry = format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
+                        match engine.send_and_await_site(&retry, site).await {
+                            Ok(o2) => {
+                                if o2.limit_hit {
+                                    arc.log_handover_event("same_site_limit", "새 채팅에서도 한도 유지");
+                                    last_err = "같은 사이트 새 채팅에서도 한도 유지".into();
+                                    continue;
+                                }
+                                arc.log_handover_event("same_site_ok", "같은 사이트 새 채팅에서 이어감");
+                                return Ok((o2, site));
+                            }
+                            Err(e) => {
+                                arc.log_handover_event("same_site_error", &e.to_string());
+                                last_err = format!("재전송 실패: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        arc.log_handover_event("rotate_error", &e.to_string());
+                        last_err = format!("새 채팅 교체 실패: {e}");
+                        continue;
+                    }
+                }
+            }
+            "gemini" => {
+                let gemini_site = automation::engine::Site::Gemini;
+                match engine.rotate_new_chat_site(gemini_site).await {
+                    Ok(_) => {
+                        arc.reset_counter();
+                        let retry = format!("{pack}\n\n위 요청을 이어서 진행해 주세요.");
+                        match engine.send_and_await_site(&retry, gemini_site).await {
+                            Ok(o2) => {
+                                if o2.limit_hit {
+                                    arc.log_handover_event("gemini_limit", "Gemini 한도 배너 — 체인 중단");
+                                    last_err = "Gemini 재전송에서도 한도 배너 — 체인 중단".into();
+                                    break; // Gemini가 마지막 단계 — 폴백 없음
+                                }
+                                arc.log_handover_event("gemini_ok", "Gemini로 이어감");
+                                return Ok((o2, gemini_site));
+                            }
+                            Err(e) => {
+                                last_err = format!("Gemini 재전송 실패: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_err = format!("Gemini 새 채팅 교체 실패: {e}");
+                        arc.log_handover_event("gemini_rotate_error", &e.to_string());
+                        continue;
+                    }
+                }
+            }
+            other => {
+                last_err = format!("미지의 order 항목: {other}");
+            }
+        }
+    }
+    arc.log_handover_event("chain_failed", &last_err);
+    Err(last_err)
 }

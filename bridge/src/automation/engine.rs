@@ -596,7 +596,12 @@ impl Engine {
         if http_ok(self.cdp_port, "/json/version").await {
             return Ok(());
         }
-        self.spawn_chrome(site, true).await.map(|_| ())
+        // settings의 "전용 Chrome 항상 보이기"(CODEBRIDGE_CHROME_KEEP_VISIBLE=1)면 숨기지 않고 띄운다.
+        // 이미 실행 중인 Chrome에는 소급 적용되지 않고, 다음 기동부터 반영된다.
+        let keep_visible = std::env::var("CODEBRIDGE_CHROME_KEEP_VISIBLE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        self.spawn_chrome(site, !keep_visible).await.map(|_| ())
     }
 
     /// pid가 알려지지 않은(예: 숨겨진) Chrome을 보이게 새로 띄울 때 사용한다.

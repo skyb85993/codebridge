@@ -132,6 +132,35 @@ export default function App() {
     }
   }, [messages, busy, projectDir, refreshSessions]);
 
+  // ---------- 보이지 않는 동안 질문 카드 도착/작업 완료 알림 ----------
+  const notifySeenRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState !== 'hidden') return;
+    const lastAssistant = [...messages].reverse().find((m) => m.type === 'assistant');
+    if (!lastAssistant) return;
+    const a = lastAssistant as Extract<ChatMessage, { type: 'assistant' }>;
+    const id = a.id ?? '';
+    if (notifySeenRef.current.has(id)) return;
+    const text = a.content
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as { text?: string }).text ?? '')
+      .join('\n');
+    const hasQuestion = text.includes('CODEBRIDGE_QUESTION:');
+    const TERMINAL = new Set(['stop', 'length', 'content-filter', 'error']);
+    const done = !!a.finish && TERMINAL.has(a.finish);
+    if (!hasQuestion && !done) return;
+    notifySeenRef.current.add(id);
+    window.codebridge
+      .notify({
+        title: 'CodeBridge',
+        body: hasQuestion ? '질문이 도착했어요 — 답을 기다리고 있어요.' : '작업이 끝났어요.',
+      })
+      .catch(() => {
+        /* 알림 미지원 환경 무시 */
+      });
+  }, [messages]);
+
   // ---------- 폴링 (probe) ----------
   useEffect(() => {
     const tick = async () => {
@@ -245,6 +274,14 @@ export default function App() {
     }
   }, [activeId, loadMessages]);
 
+  // 설정 화면의 "현재 대화에도 적용" — 진행 중인 세션의 모델도 바꾼다
+  const applyModelToCurrent = useCallback(
+    (m: ModelID) => {
+      void changeModel(m);
+    },
+    [changeModel],
+  );
+
   const changeModel = useCallback(
     async (m: ModelID) => {
       setModel(m);
@@ -322,6 +359,8 @@ export default function App() {
             onClose={closeSettings}
             onPickProject={pickProject}
             onDefaultModel={applyDefaultModel}
+            onApplyModelToCurrent={applyModelToCurrent}
+            canApplyModelToCurrent={!!activeId}
           />
         )}
       </div>
@@ -339,6 +378,8 @@ export default function App() {
           onClose={closeSettings}
           onPickProject={pickProject}
           onDefaultModel={applyDefaultModel}
+          onApplyModelToCurrent={applyModelToCurrent}
+          canApplyModelToCurrent={!!activeId}
         />
       )}
       <div className="flex min-h-0 flex-1">

@@ -53,4 +53,10 @@ contextBridge.exposeInMainWorld('codebridge', {
   restartBridge() {
     return ipcRenderer.invoke('app:restartBridge');
   },
+  restartServices() {
+    return ipcRenderer.invoke('app:restartServices');
+  },
+  notify(payload) {
+    return ipcRenderer.invoke('app:notify', payload);
+  },
 });

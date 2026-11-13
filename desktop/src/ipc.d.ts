@@ -24,6 +24,7 @@ export type HostSettings = {
   autoCheckUpdates: boolean;
   dangerConfirm: boolean;
   handoverLimit: number;
+  chromeAlwaysVisible: boolean;
   projectDir: string | null;
   logDir: string;
 };
@@ -37,7 +38,9 @@ export type UpdateState =
   | 'error';
 export type HostUpdateState = { state: UpdateState; version: string | null; appVersion: string };
 
-export type HostSettingsPatch = Partial<Pick<HostSettings, 'model' | 'autoCheckUpdates' | 'dangerConfirm' | 'handoverLimit'>>;
+export type HostSettingsPatch = Partial<
+  Pick<HostSettings, 'model' | 'autoCheckUpdates' | 'dangerConfirm' | 'handoverLimit' | 'chromeAlwaysVisible'>
+>;
 
 declare global {
   interface Window {
@@ -61,6 +64,8 @@ declare global {
       checkUpdates(): Promise<{ ok: boolean; state?: UpdateState; version?: string | null; error?: string }>;
       resetChromeProfile(): Promise<{ ok: boolean; backup?: string | null; error?: string }>;
       restartBridge(): Promise<{ ok: boolean; error?: string }>;
+      restartServices(): Promise<{ ok: boolean; error?: string }>;
+      notify(payload: { title?: string; body?: string }): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
