@@ -132,11 +132,55 @@ pub struct SendOutcome {
     pub code_blocks: Vec<String>,
     /// 마감 시간까지 세대 완료를 확인하지 못하고 끝난 부분 응답이면 true
     pub truncated: bool,
+    /// 마지막 assistant 요소 안의 이미지 URL들 (DOM 순서). CODEBRIDGE_IMAGE 마커와 매칭.
+    pub images: Vec<String>,
 }
 
 pub struct CompletedPage {
     pub browser: Browser,
     pub page: Page,
+}
+
+/// 표준 base64 디코더 (공백 허용, 패딩 필수). 실패 시 Err.
+#[cfg(test)]
+mod base64_tests {
+    use super::*;
+
+    #[test]
+    fn base64_roundtrip_known() {
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello".to_vec());
+        assert_eq!(base64_decode("AA==").unwrap(), vec![0u8]);
+        assert_eq!(base64_decode("////").unwrap(), vec![255u8; 3]);
+    }
+
+    #[test]
+    fn base64_rejects_garbage() {
+        assert!(base64_decode("!!").is_err());
+    }
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for &b in bytes {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'=' {
+            break;
+        }
+        let v = TABLE.iter().position(|&x| x == b).ok_or_else(|| format!("잘못된 문자: {}", b as char))? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
 }
 
 fn js_string(s: &str) -> String {
@@ -818,13 +862,140 @@ impl Engine {
         let code_blocks: Vec<String> =
             serde_json::from_str(&blocks_json).unwrap_or_default();
 
+        // 마지막 assistant 요소 안의 이미지 URL들 (src/currentSrc 우선)
+        let imgs_json = eval_str(
+            &page,
+            &format!(
+                r#"(() => {{
+                    const a = document.querySelectorAll({sel});
+                    const el = a[a.length - 1];
+                    if (!el) return '[]';
+                    const imgs = [...el.querySelectorAll('img')].map(i => i.currentSrc || i.src || '').filter(s => /^https?:/.test(s));
+                    return JSON.stringify(imgs);
+                }})()"#,
+                sel = js_string(sel.assistant_sel)
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| "[]".to_string());
+        let images: Vec<String> = serde_json::from_str(&imgs_json).unwrap_or_default();
+
         let limit_hit = self.is_limit_banner(&page).await;
+
+        // CODEBRIDGE_IMAGE 마커가 있으면 각 마커 순서와 이미지 순서를 맞춰 파일로 저장한다.
+        let last = self.persist_images(&page, &last, &images).await;
+
         drop(browser); // 브라우저는 유지 (로그인 세션)
-        Ok(SendOutcome { text: last, limit_hit, code_blocks, truncated })
+        Ok(SendOutcome { text: last, limit_hit, code_blocks, truncated, images })
     }
 
     /// 이전 동작과의 호환: ChatGPT send
     pub async fn send_and_await(&self, prompt: &str) -> Result<SendOutcome, EngineError> {
         self.send_and_await_site(prompt, Site::ChatGpt).await
+    }
+
+    /// CODEBRIDGE_IMAGE 마커가 있으면 그것과 대응하는 이미지를 다운로드하여
+    /// 프로젝트 루트(현재 cwd) 기준 `path`에 저장하고,
+    /// 마커를 "💾 path (N KB) 저장됨" 으로 교체한 텍스트를 돌려준다.
+    ///
+    /// 마커 형식: `CODEBRIDGE_IMAGE {"path":"assets/logo.png"}` 한 줄에 하나씩.
+    /// 이미지 ↔ 마커 매칭은 등장 순서.
+    async fn persist_images(&self, page: &Page, text: &str, images: &[String]) -> String {
+        if images.is_empty() || !text.contains("CODEBRIDGE_IMAGE ") {
+            return text.to_string();
+        }
+        let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut out: Vec<String> = Vec::with_capacity(text.lines().count() + 4);
+        let mut img_idx = 0usize;
+        for line in text.split('\n') {
+            let trimmed = line.trim();
+            let Some(body) = trimmed.strip_prefix("CODEBRIDGE_IMAGE ") else {
+                out.push(line.to_string());
+                continue;
+            };
+            // 마커 한 줄에서 JSON 본문 추출
+            let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+            let rel = parsed
+                .as_ref()
+                .and_then(|v| v.get("path").and_then(|p| p.as_str()))
+                .map(str::to_string);
+            let Some(rel) = rel else {
+                out.push(line.to_string());
+                continue;
+            };
+            let Some(rel) = crate::translate::lenient::sanitize_path(&rel) else {
+                out.push(format!("(이미지 경로 거부: {})", rel));
+                continue;
+            };
+            let Some(url) = images.get(img_idx).cloned() else {
+                out.push(format!("(이미지 {}번째가 없습니다)", img_idx + 1));
+                continue;
+            };
+            img_idx += 1;
+            let target = root.join(&rel);
+            if !target.starts_with(&root) {
+                out.push(format!("(이미지 경로 거부: {})", rel));
+                continue;
+            }
+            match self.download_image(page, &url, &target).await {
+                Ok(bytes) => out.push(format!("💾 {} ({} KB) 저장됨", rel, bytes / 1024)),
+                Err(e) => out.push(format!("(이미지 저장 실패 — {}: {})", rel, e)),
+            }
+        }
+        out.join("\n")
+    }
+
+    /// 이미지 URL을 CDP fetch로 받아 base64로 디코드하여 파일에 쓴다.
+    /// (Chrome의 챗GPT 세션 쿠키를 그대로 사용하므로 로그인이 필요한 이미지 URL도 받을 수 있다)
+    async fn download_image(
+        &self,
+        page: &Page,
+        url: &str,
+        target: &std::path::Path,
+    ) -> Result<usize, EngineError> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| EngineError::Page(format!("디렉터리 생성 실패: {e}")))?;
+        }
+        let js = format!(
+            r#"(async () => {{
+                try {{
+                    const r = await fetch({url}, {{ credentials: 'include' }});
+                    if (!r.ok) return JSON.stringify({{ ok: false, status: r.status }});
+                    const b = await r.arrayBuffer();
+                    const bytes = new Uint8Array(b);
+                    let bin = '';
+                    const CHUNK = 0x8000;
+                    for (let i = 0; i < bytes.length; i += CHUNK) {{
+                        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+                    }}
+                    return JSON.stringify({{ ok: true, data: btoa(bin) }});
+                }} catch (e) {{
+                    return JSON.stringify({{ ok: false, error: String(e) }});
+                }}
+            }})()"#,
+            url = js_string(url)
+        );
+        let res = eval_str(page, &js).await?;
+        let v: serde_json::Value = serde_json::from_str(&res)
+            .map_err(|e| EngineError::Page(format!("이미지 응답 파싱 실패: {e}")))?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+            let data = v
+                .get("data")
+                .and_then(|d| d.as_str())
+                .ok_or_else(|| EngineError::Page("이미지 데이터 없음".into()))?;
+            let bytes = base64_decode(data)
+                .map_err(|e| EngineError::Page(format!("이미지 디코드 실패: {e}")))?;
+            std::fs::write(target, &bytes)
+                .map_err(|e| EngineError::Page(format!("파일 쓰기 실패: {e}")))?;
+            Ok(bytes.len())
+        } else {
+            let why = v.get("status")
+                .and_then(|s| s.as_i64())
+                .map(|s| format!("HTTP {s}"))
+                .or_else(|| v.get("error").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_else(|| "알 수 없는 오류".into());
+            Err(EngineError::Page(format!("이미지 다운로드 실패: {why}")))
+        }
     }
 }

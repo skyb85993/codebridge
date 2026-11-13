@@ -408,6 +408,20 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - 수정: 선언 순서 교정 + 배포 전 dev 인스턴스+CDP로 실기기 렌더 확인 후 v0.8.1 릴리스.
 - **프로세스 교훈**: 새 React 경로를 추가한 릴리스는 반드시 CDP로 실제 렌더 1회 확인하고 릴리스한다. "CI green + 코드 리뷰"만으로는 TDZ/로직 런타임 오류를 못 잡는다.
 
+## v0.14.0 — 이미지 자동 다운로드 (2026-11-13)
+
+**구현**
+
+- `SendOutcome`에 `images: Vec<String>` 필드 추가 — 마지막 assistant 페이지 요소에서 `img` src들을 CDP로 수집 (순서 유지).
+- `Engine::persist_images` — `CODEBRIDGE_IMAGE {"path":"..."}` 마커 매칭 → `base64_decode` → `cwd/path`에 저장. 마커 라인을 `💾 path (N KB) 저장됨`으로 교체해 UI에 표시. 탈출 경로는 거부.
+- `base64_decode` 구현 + 테스트 2개 (56/56 green).
+- `fence_convention.md`에 CODEBRIDGE_IMAGE 예시 enqueue 예시 포함.
+
+**주의/한계**
+
+- 마커와 이미지 매칭은 **생성 순서** — 이미지가 여러 장이면 순서가 보장되도록 마커도 순서대로 써야 함.
+- 이미지는 ChatGPT 웹세션 쿠키로 받으므로 cdn 도메인 외 외부 이미지는 실패할 수 있음 (필요 시 호스트 allowlist 추가 가능).
+
 ## v0.9.0 — 릴리스 안전망 + 실사용 편의 (2026-11-13)
 
 **v0.8.0 사태를 계기로 만든 릴리스 게이트**

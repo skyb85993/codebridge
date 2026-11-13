@@ -440,7 +440,8 @@ fn tool_turn_count(req: &ChatRequest) -> usize {
 
 /// 마지막 도구 실행을 끝낸 것으로 간주할 도구들:
 /// 파일 쓰기/수정처럼 "결과를 다시 모델에 보여줄 필요가 없는" 것들.
-const TERMINAL_TOOLS: &[&str] = &["write", "edit", "shell"];
+/// shell은 결과(빌드/설치 성공 여부)를 모델이 보고 다음 작업을 결정해야 하므로 여기 포함하지 않는다.
+const TERMINAL_TOOLS: &[&str] = &["write", "edit"];
 
 /// 도구 루프 안전 한도: 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
 const MAX_TOOL_TURNS: usize = 10;
@@ -746,6 +747,7 @@ async fn send_normal(
             limit_hit: false,
             code_blocks: Vec::new(),
             truncated: false,
+            images: Vec::new(),
         },
     }
 }
