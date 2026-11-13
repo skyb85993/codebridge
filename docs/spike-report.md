@@ -438,6 +438,19 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 
 - `cargo test --release` 56/56, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
 
+## v0.17.0 — 버그 수정 + 상세 로그 (2026-11-13)
+
+**수정**
+- `tool_turn_count` 세션 전체 누적 → 마지막 `role=user` 이후 tool 결과만 카운트. "도구 호출 한도에 도달했습니다"가 누적되어 이후 요청을 전부 끊던 문제 수정.
+
+**로그**
+- 매 요청 `tool-turn count={} (limit={}, remaining={})`
+- 응답 로그에 `calls=[name(args잘라낸것...)]`, `issues=[...]`, `raw_first="응답앞부분..."` 포함
+- 무한도달 시 `MAX_TOOL_TURNS 도달 (tool_count=N limit=10)` 로그
+
+**검증**
+- `cargo test --release` 56/56 green.
+
 ## v0.9.0 — 릴리스 안전망 + 실사용 편의 (2026-11-13)
 
 **v0.8.0 사태를 계기로 만든 릴리스 게이트**

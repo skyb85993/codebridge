@@ -381,7 +381,17 @@ fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response>
     if tool_count == 0 {
         return None;
     }
+    println!(
+        "[browser] tool-turn count={} (limit={}, remaining={})",
+        tool_count,
+        MAX_TOOL_TURNS,
+        MAX_TOOL_TURNS.saturating_sub(tool_count)
+    );
     if tool_count >= MAX_TOOL_TURNS {
+        println!(
+            "[browser] MAX_TOOL_TURNS 도달 (tool_count={} limit={}) — 모델 호출 중단, 마무리 응답",
+            tool_count, MAX_TOOL_TURNS
+        );
         return Some(ack_response(
             app,
             req,
@@ -391,9 +401,44 @@ fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response>
     None
 }
 
-/// 이 요청에서 도구 루프 턴 수 (role=tool 메시지 개수).
+fn truncate_line(s: &str, n: usize) -> String {
+    let t: String = s.chars().take(n).collect();
+    if s.chars().count() > n {
+        format!("{t}…")
+    } else {
+        t
+    }
+}
+
+fn tool_call_summary(calls: &[serde_json::Value]) -> String {
+    calls
+        .iter()
+        .map(|c| {
+            let name = c
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("?");
+            let args = c
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            format!("{}({})", name, truncate_line(args, 120))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 이 요청에서 도구 루프 턴 수 ("role=tool" 메시지 개수).
+/// 마지막 user 메시지 이후의 tool 결과만 센다 — 세션이 오래 이어져도
+/// 과거 턴의 사용 내역이 한도 카운트에 누적되지 않도록 리셋한다.
 fn tool_turn_count(req: &ChatRequest) -> usize {
-    req.messages.iter().filter(|m| m.role == "tool").count()
+    req.messages
+        .iter()
+        .rposition(|m| m.role == "user")
+        .map(|idx| req.messages[idx + 1..].iter().filter(|m| m.role == "tool").count())
+        .unwrap_or_else(|| req.messages.iter().filter(|m| m.role == "tool").count())
 }
 
 /// 도구 루프 안전 한도. 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
@@ -647,12 +692,20 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
     }
     let finish = if calls.is_empty() { "stop" } else { "tool_calls" }.to_string();
 
+    let issues_summary: String = issues
+        .iter()
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" | ");
     println!(
-        "[browser] model={} stream={} msgs={} calls={} id={id}",
+        "[browser] model={} stream={} msgs={} calls=[{}] issues=[{}] id={id} raw_first=\"{}\"",
         req.model,
         req.stream,
         req.messages.len(),
-        calls.len()
+        tool_call_summary(&calls),
+        truncate_line(&issues_summary, 200),
+        truncate_line(&raw, 200),
     );
 
     if req.stream {
