@@ -422,6 +422,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - 마커와 이미지 매칭은 **생성 순서** — 이미지가 여러 장이면 순서가 보장되도록 마커도 순서대로 써야 함.
 - 이미지는 ChatGPT 웹세션 쿠키로 받으므로 cdn 도메인 외 외부 이미지는 실패할 수 있음 (필요 시 호스트 allowlist 추가 가능).
 
+## v0.15.0 — 도구 루프 연속성 수정 (2026-11-13)
+
+**문제 확인 (실제 세션에서 재현)**
+
+- "웹페이지 만들어줘" → GPT가 `TOOL write path=package.json` 출력 → bridge가 `"도구 실행이 완료되었습니다."` → 루프 종료 — package.json만 만들어지고 실제 웹페이지 코드는 한 줄도 작성되지 않음.
+- 근본 원인: `TERMINAL_TOOLS = ["write","edit"]` — write/edit를 도구 루프 종료 조건으로 둔 설계 실수. GPT가 파일을 하나 쓰는 즉시 세션이 "완료" 처리되어, 실제로 화면의 웹페이지는 한 줄도 작성되지 않았다.
+
+**수정**
+
+- `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
+- 무한 루프 방지는 `MAX_TOOL_TURNS = 10`으로 유지, 한도 메시지도 함께 정리.
+
+**검증**
+
+- `cargo test --release` 56/56, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
 ## v0.9.0 — 릴리스 안전망 + 실사용 편의 (2026-11-13)
 
 **v0.8.0 사태를 계기로 만든 릴리스 게이트**

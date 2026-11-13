@@ -373,10 +373,9 @@ fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
     }
 }
 
-/// 이전 tool 결과 직후(마지막 메시지가 role=tool): 마무리 조건이 되면 ACK,
-/// 아니면 None을 반환해서 ChatGPT에게 이어서 보내게 한다 (read/grep/question 루프).
-/// write/edit/shell만 있었고 결과에 실패 징후가 없으면 엔드턴 ACK.
-/// 실패 징후가 있으면 None을 반환해서 모델이 다시 고치도록 한다 (MAX_TOOL_TURNS가 무한 루프를 막는다).
+/// 이전 tool 결과 직후(마지막 메시지가 role=tool): 모든 도구를 모델에게 다시 보여주고 계속 이어가게 한다.
+/// 실패 징후가 있으면 재시도, 없어도 다음 작업을 모델이 정할 수 있게 계속 호출한다 (MAX_TOOL_TURNS가 무한 루프를 막는다).
+/// 작업이 끝나면 모델이 tool 없는 텍스트("완료" 등)로 답하고 루프가 자연 종료된다.
 fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response> {
     let tool_count = tool_turn_count(req);
     if tool_count == 0 {
@@ -386,51 +385,10 @@ fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response>
         return Some(ack_response(
             app,
             req,
-            "도구 호출 횟수가 많아서 여기까지 실행했습니다. 필요한 부분을 확인하고 알려주세요.",
+            "도구 호출 한도에 도달했습니다. 필요한 부분을 확인하고 이어서 알려주세요.",
         ));
     }
-    let names = last_tool_names(req);
-    let all_terminal =
-        !names.is_empty() && names.iter().all(|n| TERMINAL_TOOLS.contains(&n.as_str()));
-    if !all_terminal {
-        return None;
-    }
-    // 실패 징후가 있으면 모델에게 재시도 기회를 준다 (무한 루프는 MAX_TOOL_TURNS로 제한).
-    if let Some(last) = req.messages.last() {
-        let txt = msg_tool_text(last);
-        if tool_text_looks_failed(&txt) {
-            return None;
-        }
-    }
-    Some(ack_response(app, req, "도구 실행이 완료되었습니다."))
-}
-
-/// 마지막 assistant 메시지의 tool_calls에서 도구 이름 목록을 뽑는다.
-fn last_tool_names(req: &ChatRequest) -> Vec<String> {
-    req.messages
-        .iter()
-        .rev()
-        .find_map(|m| {
-            if m.role == "assistant" {
-                m.tool_calls.as_ref().map(|tc| {
-                    tc.as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| {
-                                    v.get("function")
-                                        .and_then(|f| f.get("name"))
-                                        .and_then(|n| n.as_str())
-                                        .map(str::to_string)
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default()
+    None
 }
 
 /// 이 요청에서 도구 루프 턴 수 (role=tool 메시지 개수).
@@ -438,12 +396,7 @@ fn tool_turn_count(req: &ChatRequest) -> usize {
     req.messages.iter().filter(|m| m.role == "tool").count()
 }
 
-/// 마지막 도구 실행을 끝낸 것으로 간주할 도구들:
-/// 파일 쓰기/수정처럼 "결과를 다시 모델에 보여줄 필요가 없는" 것들.
-/// shell은 결과(빌드/설치 성공 여부)를 모델이 보고 다음 작업을 결정해야 하므로 여기 포함하지 않는다.
-const TERMINAL_TOOLS: &[&str] = &["write", "edit"];
-
-/// 도구 루프 안전 한도: 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
+/// 도구 루프 안전 한도. 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
 const MAX_TOOL_TURNS: usize = 10;
 
 /// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
