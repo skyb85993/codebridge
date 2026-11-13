@@ -28,6 +28,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
   const exportNoteTimer = useRef<number | undefined>(undefined);
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? null,
@@ -51,9 +52,12 @@ export default function App() {
     // 새 대화의 기본 모델을 settings에서 읽어 반영
     window.codebridge
       .getSettings()
-      .then((s) => setModel(s.model))
+      .then((s) => {
+        setModel(s.model);
+        setOnboarded(s.onboarded === true);
+      })
       .catch(() => {
-        /* 기본값 유지 */
+        setOnboarded(false);
       });
   }, []);
 
@@ -283,10 +287,13 @@ export default function App() {
           .replace(/[\\/:*?"<>|]/g, '_')
           .replace(/\s+/g, ' ')
           .slice(0, 60)
-          .trim() || 'conversation';
+          .trim() || '대화';
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
       const res = await window.codebridge.exportSession({
         markdown: lines.join('\n'),
-        filename: `${safe}.md`,
+        filename: `${safe}-${stamp}.md`,
       });
       if (res.ok) {
         flashNote(truncated ? `저장했습니다 (긴 대화라 최근 200개만 포함) — ${res.path}` : `대화를 저장했습니다 — ${res.path}`);
@@ -310,6 +317,42 @@ export default function App() {
   const removeRecentProject = useCallback(async (dir: string) => {
     await window.codebridge.removeRecentProject(dir);
   }, []);
+
+  // 전체 대화 일괄 삭제 (현재 프로젝트 기준)
+  const deleteAllSessions = useCallback(async () => {
+    if (!projectDir) return;
+    try {
+      const list = await api.listSessions(projectDir);
+      const ids = list.map((s) => s.id);
+      if (ids.length === 0) {
+        flashNote('삭제할 대화가 없습니다.');
+        return;
+      }
+      const results = await Promise.allSettled(ids.map((id) => api.deleteSession(id)));
+      const okCount = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+      if (activeId && ids.includes(activeId)) {
+        setActiveId(null);
+        setMessages([]);
+      }
+      await refreshSessions(projectDir);
+      flashNote(
+        okCount === ids.length
+          ? `대화 ${okCount}개를 삭제했습니다.`
+          : `대화 ${okCount}/${ids.length}개를 삭제했습니다 (일부 실패).`,
+      );
+    } catch {
+      flashNote('대화 삭제에 실패했습니다.');
+    }
+  }, [projectDir, activeId, refreshSessions, flashNote]);
+
+  // 세션 이름 변경 (PATCH /api/session/{id})
+  const renameSession = useCallback(
+    async (id: string, title: string) => {
+      const updated = await api.renameSession(id, title);
+      if (updated && projectDir) refreshSessions(projectDir);
+    },
+    [projectDir, refreshSessions],
+  );
 
   const deleteSession = useCallback(
     async (id: string) => {
@@ -444,6 +487,12 @@ export default function App() {
             onRemoveRecentProject={removeRecentProject}
             onExportSession={exportSession}
             canExportSession={!!activeId}
+            onResetOnboarding={() => {
+              window.codebridge.setSettings({ onboarded: false }).catch(() => {});
+              setOnboarded(false);
+              setSettingsOpen(false);
+            }}
+            onDeleteAllSessions={deleteAllSessions}
           />
         )}
       </div>
@@ -454,6 +503,40 @@ export default function App() {
     <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
       <TitleBar version={version} title={activeSession?.title ?? '새 대화'} onOpenSettings={openSettings} />
       <UpdateBanner />
+      {onboarded === false && (
+        <div className="relative shrink-0 border-b border-lineSoft bg-panel/90 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-4xl items-center gap-4 px-4 py-1.5">
+            <span className="hidden shrink-0 text-[10.5px] font-bold uppercase tracking-wider text-cyan-300 sm:inline">
+              시작하기
+            </span>
+            <ol className="flex min-w-0 flex-1 items-center gap-3 text-[11px] text-dim">
+              <li className="flex items-center gap-1.5">
+                <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[9px] font-bold text-cyan-300">1</span>
+                <span className="truncate">"TODO 하나 찾아서 고쳐줘" — 파일 수정을 맡겨보세요</span>
+              </li>
+              <span className="hidden text-dim/50 md:inline">→</span>
+              <li className="hidden items-center gap-1.5 md:flex">
+                <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[9px] font-bold text-cyan-300">2</span>
+                <span className="truncate">답이 완료되면 폴더에 바로 반영됩니다</span>
+              </li>
+              <span className="hidden text-dim/50 lg:inline">→</span>
+              <li className="hidden items-center gap-1.5 lg:flex">
+                <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[9px] font-bold text-cyan-300">3</span>
+                <span className="truncate">긴 대화는 자동으로 새 채팅으로 인수인계됩니다</span>
+              </li>
+            </ol>
+            <button
+              onClick={() => {
+                setOnboarded(true);
+                window.codebridge.setSettings({ onboarded: true }).catch(() => {});
+              }}
+              className="shrink-0 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-[10.5px] font-semibold text-cyan-200 transition-colors hover:bg-cyan-400/20"
+            >
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
       {exportNote && (
         <div className="pointer-events-none fixed bottom-16 left-1/2 z-40 max-w-[90%] -translate-x-1/2 truncate rounded-xl border border-cyan-400/30 bg-panel/95 px-4 py-2 text-[11px] font-medium text-cyan-100 shadow-card backdrop-blur">
           {exportNote}
@@ -472,6 +555,12 @@ export default function App() {
           onRemoveRecentProject={removeRecentProject}
           onExportSession={exportSession}
           canExportSession={!!activeId}
+          onResetOnboarding={() => {
+            window.codebridge.setSettings({ onboarded: false }).catch(() => {});
+            setOnboarded(false);
+            setSettingsOpen(false);
+          }}
+          onDeleteAllSessions={deleteAllSessions}
         />
       )}
       <div className="flex min-h-0 flex-1">
@@ -483,6 +572,7 @@ export default function App() {
             onNew={newSession}
             projectDir={projectDir}
             onPickProject={pickProject}
+            onRename={renameSession}
             probe={probe}
             onShowChrome={showChrome}
             onDelete={deleteSession}

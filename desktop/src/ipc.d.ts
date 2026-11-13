@@ -29,6 +29,8 @@ export type HostSettings = {
   hideContextNote: boolean;
   startAtBoot: boolean;
   recentProjects: string[];
+  onboarded: boolean;
+  exportDir: string;
   projectDir: string | null;
   logDir: string;
 };
@@ -53,6 +55,7 @@ export type HostSettingsPatch = Partial<
     | 'notifyEnabled'
     | 'hideContextNote'
     | 'startAtBoot'
+    | 'onboarded'
   >
 >;
 

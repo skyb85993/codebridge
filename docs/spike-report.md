@@ -461,3 +461,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 **검증**
 
 - `cargo test --release` 54/54 green, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
+## v0.12.0 — 실사용 편의 (2026-11-13)
+
+**기능**
+
+- **대화 내보내기**: 파일명에 날짜/시간 포함 (`{제목}-YYYY-MM-DD-HHmm.md`), 마지막 저장 폴더를 `settings.exportDir`에 기록해 다음 내보내기 기본 위치로 사용 (`dialog.showSaveDialog` 전에 읽음). 내보내기는 v0.11.0대로 설정창 "대화" 섹션 버튼에서.
+- **세션 이름 변경**: 사이드바 대화 제목 더블클릭 또는 우측 연필 아이콘 → 인라인 입력 → Enter/블러 저장 / Esc 취소. `PATCH /api/session/{id} { title }`.
+- **모든 대화 삭제**: 설정 → 대화 섹션에 2단계 인라인 확인(예/아니오)을 거쳐 `Promise.allSettled`로 병렬 삭제, 삭제 수/실패 수를 토스트로 보고. 활성 세션이 삭제되면 메인 화면 초기화.
+- **본문 검색**: 검색어로 제목 매칭이 없으면 세션 메시지(최대 200개)를 lazy fetch해 본문 일치 세션을 찾아 "본문" 배지 표시 — 제목과 본문을 동시에 필터. 세션당 병렬 fetch는 최대 10개/400ms 디바운스로 제한.
+- **온보딩**: boot.log 시작이 아니라 `settings.onboarded` (기본 false)로 관리, 채팅 상단에 3단계 안내 배너, "시작하기 → 닫기"로 영구 해제. 설정 → 시작에서 "첫 실행 안내 → 다시 보기" 버튼으로 재표시.
+
+**UI/렌더러**
+
+- 사이드바 각 대화 항목에 이름 변경 아이콘 추가.
+- 설정 모달 "시작" 섹션에 "첫 실행 안내 → 다시 보기" 추가.
+
+**검증**
+
+- `cargo test --release` 54/54, 프론트엔드 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.

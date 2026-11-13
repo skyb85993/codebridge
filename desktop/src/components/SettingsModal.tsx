@@ -30,6 +30,8 @@ interface SettingsModalProps {
   onRemoveRecentProject?: (dir: string) => void;
   onExportSession?: () => void;
   canExportSession?: boolean;
+  onResetOnboarding?: () => void;
+  onDeleteAllSessions?: () => void;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -91,7 +93,10 @@ export default function SettingsModal({
   onRemoveRecentProject,
   onExportSession,
   canExportSession,
+  onResetOnboarding,
+  onDeleteAllSessions,
 }: SettingsModalProps) {
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const [settings, setSettings] = useState<HostSettings | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -494,6 +499,40 @@ export default function SettingsModal({
                   </button>
                 }
               />
+              <Row
+                label="모든 대화 삭제"
+                desc="이 프로젝트의 모든 대화를 삭제합니다 (되돌릴 수 없음)"
+                control={
+                  !confirmingDeleteAll ? (
+                    <button
+                      onClick={() => setConfirmingDeleteAll(true)}
+                      className={`${actionBtn} border-red-400/30 text-red-300 hover:border-red-400/50`}
+                    >
+                      <Trash2 size={12} />
+                      전체 삭제
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-[10.5px] font-semibold text-red-300">정말 삭제?</span>
+                      <button
+                        onClick={() => {
+                          setConfirmingDeleteAll(false);
+                          onDeleteAllSessions?.();
+                        }}
+                        className="rounded-md bg-red-500/80 px-2 py-1 text-[10.5px] font-bold text-white"
+                      >
+                        예
+                      </button>
+                      <button
+                        onClick={() => setConfirmingDeleteAll(false)}
+                        className="rounded-md border border-lineSoft bg-panel2 px-2 py-1 text-[10.5px] text-text"
+                      >
+                        아니오
+                      </button>
+                    </span>
+                  )
+                }
+              />
             </Section>
 
             {/* 알림 */}
@@ -529,6 +568,15 @@ export default function SettingsModal({
                     }
                     disabled={busy === 'save'}
                   />
+                }
+              />
+              <Row
+                label="첫 실행 안내"
+                desc="3단계 시작 안내를 채팅 화면에 다시 표시합니다"
+                control={
+                  <button onClick={() => onResetOnboarding?.()} className={actionBtn}>
+                    다시 보기
+                  </button>
                 }
               />
             </Section>

@@ -172,6 +172,8 @@ const SETTINGS_DEFAULTS = {
   hideContextNote: false,        // "메시지 N개 쌓였습니다" 안내 숨김 (CODEBRIDGE_NO_CONTEXT_NOTE로 전달)
   startAtBoot: false,            // Windows 시작 시 함께 실행
   recentProjects: [],            // 최근 프로젝트 폴더 목록 (최신순, 최대 5개)
+  onboarded: false,              // 첫 실행/온보딩 안내 표시 여부 (사용자가 닫으면 true)
+  exportDir: '',                 // 대화 내보내기 마지막 저장 폴더
 };
 function getSettings() {
   return { ...SETTINGS_DEFAULTS, ...readSettings() };
@@ -786,6 +788,7 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
   if (typeof patch.chromeAlwaysVisible === 'boolean') next.chromeAlwaysVisible = patch.chromeAlwaysVisible;
   if (typeof patch.notifyEnabled === 'boolean') next.notifyEnabled = patch.notifyEnabled;
   if (typeof patch.hideContextNote === 'boolean') next.hideContextNote = patch.hideContextNote;
+  if (typeof patch.onboarded === 'boolean') next.onboarded = patch.onboarded;
   if (typeof patch.startAtBoot === 'boolean') {
     next.startAtBoot = patch.startAtBoot;
     try {
@@ -964,11 +967,14 @@ ipcMain.handle('app:exportSession', async (_e, payload) => {
         : 'conversation.md';
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '대화 내보내기',
-      defaultPath: filename,
+      defaultPath:
+        (getSettings().exportDir ? path.join(getSettings().exportDir, filename) : filename) ||
+        'conversation.md',
       filters: [{ name: 'Markdown', extensions: ['md'] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
     fs.writeFileSync(result.filePath, markdown, 'utf8');
+    writeSettings({ ...readSettings(), exportDir: path.dirname(result.filePath) });
     appendLog('settings', `[export] wrote ${result.filePath} (${markdown.length} chars)\n`);
     return { ok: true, path: result.filePath };
   } catch (e) {

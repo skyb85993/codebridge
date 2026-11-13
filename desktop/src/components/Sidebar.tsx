@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
-import { FolderOpen, Folder, MessageSquarePlus, Search, Circle, Trash2 } from 'lucide-react';
-import { SessionInfo, formatRelTime } from '../api';
+import { useEffect, useMemo, useState } from 'react';
+import { FolderOpen, Folder, MessageSquarePlus, Search, Circle, Trash2, Check, X, TextCursorInput } from 'lucide-react';
+import { api, SessionInfo, formatRelTime } from '../api';
 import type { HostProbe } from '../ipc';
 
 interface SidebarProps {
@@ -10,6 +10,7 @@ interface SidebarProps {
   onNew: () => void;
   projectDir: string | null;
   onPickProject: () => void;
+  onRename: (id: string, title: string) => void;
   probe: HostProbe | null;
   onDelete: (id: string) => void | Promise<void>;
   onOpenProjectFolder: () => void;
@@ -30,6 +31,7 @@ export default function Sidebar({
   onPickProject,
   probe,
   onDelete,
+  onRename,
   onOpenProjectFolder,
   onShowChrome,
 }: SidebarProps) {
@@ -37,12 +39,64 @@ export default function Sidebar({
   const [opening, setOpening] = useState(false);
   const [showChromeError, setShowChromeError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [contentMatchIds, setContentMatchIds] = useState<Set<string> | null>(null);
+
+  // 제목에 없는 검색어는 세션 본문까지 검사 (최대 10개 세션만, 400ms 디바운스)
+  useEffect(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      setContentMatchIds(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        const set = new Set<string>();
+        const candidates = sessions
+          .filter((s) => !(s.title ?? '').toLowerCase().includes(q))
+          .slice(0, 10);
+        for (const s of candidates) {
+          if (cancelled) return;
+          try {
+            const msgs = await api.getMessages(s.id);
+            const hit = msgs.some((m) =>
+              m.type === 'user'
+                ? (m.text ?? '').toLowerCase().includes(q)
+                : (m.content ?? []).some(
+                    (p) => p.type === 'text' && (p.text ?? '').toLowerCase().includes(q),
+                  ),
+            );
+            if (hit) set.add(s.id);
+          } catch {
+            /* 해당 세션은 건너뜀 */
+          }
+        }
+        if (!cancelled) setContentMatchIds(set);
+      })();
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query, sessions]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
-    return sessions.filter((s) => (s.title ?? '새 대화').toLowerCase().includes(q));
-  }, [sessions, query]);
+    return sessions.filter(
+      (s) =>
+        (s.title ?? '새 대화').toLowerCase().includes(q) ||
+        (contentMatchIds ? contentMatchIds.has(s.id) : false),
+    );
+  }, [sessions, query, contentMatchIds]);
+
+  const commitRename = (id: string) => {
+    const t = editTitle.trim();
+    if (t) onRename(id, t);
+    setEditingId(null);
+  };
 
   const chatgpt = probe?.sites.find((s) => s.site === 'chatgpt');
   const gemini = probe?.sites.find((s) => s.site === 'gemini');
@@ -146,28 +200,84 @@ export default function Sidebar({
                 active ? 'bg-panel3 text-text' : 'text-dim hover:bg-panel2 hover:text-text'
               }`}
             >
-              <button
-                onClick={() => onSelect(s.id)}
-                className="min-w-0 flex-1 px-3 py-2 text-left"
-              >
-                {active && (
-                  <span className="absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full bg-accent-grad" />
-                )}
-                <span className="block truncate text-[12px] leading-snug">
-                  {s.title?.trim() || '새 대화'}
-                </span>
-                <span className="mt-0.5 block text-[10px] text-dim">
-                  {formatRelTime(s.time?.updated ?? s.time?.created)}
-                </span>
-              </button>
-              <button
-                className="mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-md text-dim opacity-0 transition-all hover:bg-red-400/15 hover:text-red-300 focus:opacity-100 focus:outline-none group-hover:opacity-100"
-                title="이 대화 삭제"
-                aria-label="이 대화 삭제"
-                onClick={() => setConfirmDeleteId(s.id)}
-              >
-                <Trash2 size={13} strokeWidth={2} />
-              </button>
+              {editingId === s.id ? (
+                <div className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5">
+                  <input
+                    autoFocus
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename(s.id);
+                      if (e.key === 'Escape') setEditingId(null);
+                    }}
+                    onBlur={() => commitRename(s.id)}
+                    className="min-w-0 flex-1 rounded-md border border-accent/40 bg-panel2 px-2 py-1 text-[11.5px] text-text outline-none"
+                    aria-label="대화 이름 변경"
+                  />
+                  <button
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-emerald-400 hover:bg-panel3"
+                    onClick={() => commitRename(s.id)}
+                    aria-label="저장"
+                  >
+                    <Check size={13} />
+                  </button>
+                  <button
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-dim hover:bg-panel3"
+                    onClick={() => setEditingId(null)}
+                    aria-label="취소"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => onSelect(s.id)}
+                    onDoubleClick={() => {
+                      setEditingId(s.id);
+                      setEditTitle(s.title?.trim() || '새 대화');
+                    }}
+                    className="min-w-0 flex-1 px-3 py-2 text-left"
+                    title="더블 클릭하면 이름을 바꿀 수 있습니다"
+                  >
+                    {active && (
+                      <span className="absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full bg-accent-grad" />
+                    )}
+                    <span className="block truncate text-[12px] leading-snug">
+                      {s.title?.trim() || '새 대화'}
+                      {query.trim() &&
+                        !(s.title ?? '').toLowerCase().includes(query.trim().toLowerCase()) &&
+                        contentMatchIds?.has(s.id) && (
+                          <span className="ml-1.5 rounded-md bg-cyan-400/15 px-1 py-0.5 align-middle font-mono text-[9px] font-bold text-cyan-300">
+                            본문
+                          </span>
+                        )}
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-dim">
+                      {formatRelTime(s.time?.updated ?? s.time?.created)}
+                    </span>
+                  </button>
+                  <button
+                    className="mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-md text-dim opacity-0 transition-all hover:bg-panel2 hover:text-text focus:opacity-100 focus:outline-none group-hover:opacity-100"
+                    title="이름 변경"
+                    aria-label="이름 변경"
+                    onClick={() => {
+                      setEditingId(s.id);
+                      setEditTitle(s.title?.trim() || '새 대화');
+                    }}
+                  >
+                    <TextCursorInput size={13} strokeWidth={2} />
+                  </button>
+                  <button
+                    className="mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-md text-dim opacity-0 transition-all hover:bg-red-400/15 hover:text-red-300 focus:opacity-100 focus:outline-none group-hover:opacity-100"
+                    title="이 대화 삭제"
+                    aria-label="이 대화 삭제"
+                    onClick={() => setConfirmDeleteId(s.id)}
+                  >
+                    <Trash2 size={13} strokeWidth={2} />
+                  </button>
+                </>
+              )}
             </div>
           );
         })}

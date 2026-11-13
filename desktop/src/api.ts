@@ -90,6 +90,18 @@ export const api = {
       return false;
     }
   },
+  // 세션 제목 변경 (PATCH /api/session/{id} { title })
+  renameSession: async (sessionId: string, title: string): Promise<SessionInfo | undefined> => {
+    try {
+      const r = await oc(`/api/session/${sessionId}`, {
+        method: 'PATCH',
+        body: { title },
+      });
+      return r.json?.data as SessionInfo | undefined;
+    } catch {
+      return undefined;
+    }
+  },
   probe: () => window.codebridge.probe(),
 };
 
