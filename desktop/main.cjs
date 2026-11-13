@@ -95,6 +95,8 @@ const SETTINGS_DEFAULTS = {
   dangerConfirm: true,           // 위험 명령 확인 카드 (브릿지에 CODEBRIDGE_DANGER_CONFIRM로 전달)
   handoverLimit: 25,             // 인수인계 소프트 리밋 (브릿지에 CODEBRIDGE_HANDOVER_LIMIT로 전달)
   chromeAlwaysVisible: false,    // 전용 Chrome을 항상 화면에 표시 (CODEBRIDGE_CHROME_KEEP_VISIBLE로 전달)
+  notifyEnabled: true,           // 질문 카드/완료 Windows 알림
+  hideContextNote: false,        // "메시지 N개 쌓였습니다" 안내 숨김 (CODEBRIDGE_NO_CONTEXT_NOTE로 전달)
 };
 function getSettings() {
   return { ...SETTINGS_DEFAULTS, ...readSettings() };
@@ -169,6 +171,7 @@ function spawnBridge(cwd) {
     CODEBRIDGE_DANGER_CONFIRM: settings.dangerConfirm ? '1' : '0',
     CODEBRIDGE_HANDOVER_LIMIT: String(settings.handoverLimit),
     CODEBRIDGE_CHROME_KEEP_VISIBLE: settings.chromeAlwaysVisible ? '1' : '0',
+    CODEBRIDGE_NO_CONTEXT_NOTE: settings.hideContextNote ? '1' : '0',
   };
   bridgeProc = spawn(BRIDGE_EXE, [], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   bridgeProc.stdout.pipe(stream);
@@ -452,6 +455,17 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
+
+  // 렌더러 console 메시지를 파일로 남긴다 (크래시 진단용)
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    try {
+      rotateLargeLog('renderer.log');
+      appendLog('renderer', `[renderer] L${level} ${String(message).slice(0, 1000)} (${path.basename(String(sourceId || ''))}:${line})\n`);
+    } catch {
+      /* 로깅 실패는 무시 */
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -640,6 +654,8 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
     if (Number.isInteger(n) && [10, 25, 50].includes(n)) next.handoverLimit = n;
   }
   if (typeof patch.chromeAlwaysVisible === 'boolean') next.chromeAlwaysVisible = patch.chromeAlwaysVisible;
+  if (typeof patch.notifyEnabled === 'boolean') next.notifyEnabled = patch.notifyEnabled;
+  if (typeof patch.hideContextNote === 'boolean') next.hideContextNote = patch.hideContextNote;
   if (patch.projectDir != null) {
     return { ok: false, error: 'projectDir은 폴더 선택으로만 변경할 수 있습니다.' };
   }
@@ -648,7 +664,8 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
   const bridgeAffected =
     cur.dangerConfirm !== next.dangerConfirm ||
     cur.handoverLimit !== next.handoverLimit ||
-    cur.chromeAlwaysVisible !== next.chromeAlwaysVisible;
+    cur.chromeAlwaysVisible !== next.chromeAlwaysVisible ||
+    cur.hideContextNote !== next.hideContextNote;
   if (bridgeAffected && projectDir) {
     appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit})\n`);
     spawnBridge(projectDir);
@@ -670,6 +687,19 @@ ipcMain.handle('app:openReleasesPage', async () => {
   try {
     await shell.openExternal('https://github.com/skyb85993/codebridge/releases');
     return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+// 프로젝트 폴더를 탐색기로 연다 (에이전트가 막 수정한 파일을 바로 확인할 때)
+ipcMain.handle('app:openProjectFolder', async () => {
+  if (!projectDir || !fs.existsSync(projectDir)) {
+    return { ok: false, error: '프로젝트 폴더가 선택되지 않았거나 존재하지 않습니다.' };
+  }
+  try {
+    const err = await shell.openPath(projectDir);
+    return err ? { ok: false, error: err } : { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
   }

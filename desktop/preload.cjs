@@ -59,4 +59,7 @@ contextBridge.exposeInMainWorld('codebridge', {
   notify(payload) {
     return ipcRenderer.invoke('app:notify', payload);
   },
+  openProjectFolder() {
+    return ipcRenderer.invoke('app:openProjectFolder');
+  },
 });

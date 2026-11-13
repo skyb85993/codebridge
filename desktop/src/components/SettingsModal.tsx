@@ -368,6 +368,22 @@ export default function SettingsModal({
                   </div>
                 }
               />
+              <Row
+                label="긴 대화 안내 숨기기"
+                desc="답변 끝의 'N개 쌓였습니다' 안내 문구를 표시하지 않습니다"
+                control={
+                  <Toggle
+                    on={settings.hideContextNote}
+                    onChange={(v) =>
+                      patch(
+                        { hideContextNote: v },
+                        v ? '긴 대화 안내를 숨깁니다.' : '긴 대화 안내를 표시합니다.',
+                      )
+                    }
+                    disabled={busy === 'save'}
+                  />
+                }
+              />
             </Section>
 
             {/* 업데이트 */}
@@ -390,6 +406,23 @@ export default function SettingsModal({
                 </button>
                 {updateInfo && <span className="text-[10.5px] text-dim">{updateInfo}</span>}
               </div>
+            </Section>
+
+            {/* 알림 */}
+            <Section title="알림">
+              <Row
+                label="질문/완료 알림"
+                desc="앱이 숨겨진 동안 답변 대기/작업 완료 시 Windows 토스트로 알립니다"
+                control={
+                  <Toggle
+                    on={settings.notifyEnabled}
+                    onChange={(v) =>
+                      patch({ notifyEnabled: v }, v ? '알림을 켰습니다.' : '알림을 껐습니다.')
+                    }
+                    disabled={busy === 'save'}
+                  />
+                }
+              />
             </Section>
 
             {/* 전용 Chrome */}

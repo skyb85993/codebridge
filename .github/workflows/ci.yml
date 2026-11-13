@@ -66,6 +66,12 @@ jobs:
       - name: Testpages DOM contract regression
         run: node scripts/testpages-check.mjs
 
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Render smoke check
+        run: node scripts/smoke-check.mjs
+
       - name: Packaging sanity (electron-builder --dir)
         run: npm run dist -- --dir
         working-directory: desktop

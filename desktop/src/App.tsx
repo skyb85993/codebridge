@@ -151,14 +151,23 @@ export default function App() {
     const done = !!a.finish && TERMINAL.has(a.finish);
     if (!hasQuestion && !done) return;
     notifySeenRef.current.add(id);
-    window.codebridge
-      .notify({
-        title: 'CodeBridge',
-        body: hasQuestion ? '질문이 도착했어요 — 답을 기다리고 있어요.' : '작업이 끝났어요.',
-      })
-      .catch(() => {
-        /* 알림 미지원 환경 무시 */
-      });
+    // 설정에서 알림을 껐으면 발화하지 않음
+    void (async () => {
+      try {
+        const s = await window.codebridge.getSettings();
+        if (s && s.notifyEnabled === false) return;
+      } catch {
+        /* 게이트 실패 시 알림 그대로 */
+      }
+      window.codebridge
+        .notify({
+          title: 'CodeBridge',
+          body: hasQuestion ? '질문이 도착했어요 — 답을 기다리고 있어요.' : '작업이 끝났어요.',
+        })
+        .catch(() => {
+          /* 알림 미지원 환경 무시 */
+        });
+    })();
   }, [messages]);
 
   // ---------- 폴링 (probe) ----------
@@ -231,6 +240,10 @@ export default function App() {
     () => window.codebridge.showChrome(),
     [],
   );
+
+  const openProjectFolder = useCallback(() => {
+    void window.codebridge.openProjectFolder();
+  }, []);
 
   const deleteSession = useCallback(
     async (id: string) => {
@@ -394,6 +407,7 @@ export default function App() {
             probe={probe}
             onShowChrome={showChrome}
             onDelete={deleteSession}
+            onOpenProjectFolder={openProjectFolder}
           />
         )}
         <main className="flex min-w-0 flex-1 flex-col">

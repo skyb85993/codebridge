@@ -25,6 +25,8 @@ export type HostSettings = {
   dangerConfirm: boolean;
   handoverLimit: number;
   chromeAlwaysVisible: boolean;
+  notifyEnabled: boolean;
+  hideContextNote: boolean;
   projectDir: string | null;
   logDir: string;
 };
@@ -39,7 +41,16 @@ export type UpdateState =
 export type HostUpdateState = { state: UpdateState; version: string | null; appVersion: string };
 
 export type HostSettingsPatch = Partial<
-  Pick<HostSettings, 'model' | 'autoCheckUpdates' | 'dangerConfirm' | 'handoverLimit' | 'chromeAlwaysVisible'>
+  Pick<
+    HostSettings,
+    | 'model'
+    | 'autoCheckUpdates'
+    | 'dangerConfirm'
+    | 'handoverLimit'
+    | 'chromeAlwaysVisible'
+    | 'notifyEnabled'
+    | 'hideContextNote'
+  >
 >;
 
 declare global {
@@ -66,6 +77,7 @@ declare global {
       restartBridge(): Promise<{ ok: boolean; error?: string }>;
       restartServices(): Promise<{ ok: boolean; error?: string }>;
       notify(payload: { title?: string; body?: string }): Promise<{ ok: boolean; error?: string }>;
+      openProjectFolder(): Promise<{ ok: boolean; error?: string }>;
     };
   }
 }

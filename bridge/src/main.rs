@@ -21,6 +21,8 @@ pub struct AppState {
     pub cfg: Arc<cfg::Config>,
     /// "지금 인수인계" 버튼을 눌렀는지 (one-shot). 다음 browser-mode 요청이 소비한다.
     pub manual_handover: Arc<AtomicBool>,
+    /// 테스트 훅: CODEBRIDGE_FORCE_LIMIT_ONCE=1로 시작하면 첫 요청을 한도 배너로 강제한다.
+    pub force_limit_hit: Arc<AtomicBool>,
 }
 
 #[tokio::main]
@@ -43,6 +45,11 @@ async fn main() {
         .with_state(AppState {
             cfg: Arc::new(cfg),
             manual_handover: Arc::new(AtomicBool::new(false)),
+            force_limit_hit: Arc::new(AtomicBool::new(
+                std::env::var("CODEBRIDGE_FORCE_LIMIT_ONCE")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false),
+            )),
         });
 
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -407,3 +407,23 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - v0.8.0 배포 직후 사용자가 "문제가 발생했습니다" 오류 화면 목격 — 원인은 `applyModelToCurrent` useCallback이 `changeModel`보다 먼저 선언되어 deps 배열 평가 시 **TDZ ReferenceError** (매 렌더 크래시). esbuild는 이 에러를 잡지 못하고, 새 코드라 런타임 확인 없이 배포된 것이 원인.
 - 수정: 선언 순서 교정 + 배포 전 dev 인스턴스+CDP로 실기기 렌더 확인 후 v0.8.1 릴리스.
 - **프로세스 교훈**: 새 React 경로를 추가한 릴리스는 반드시 CDP로 실제 렌더 1회 확인하고 릴리스한다. "CI green + 코드 리뷰"만으로는 TDZ/로직 런타임 오류를 못 잡는다.
+
+## v0.9.0 — 릴리스 안전망 + 실사용 편의 (2026-11-13)
+
+**v0.8.0 사태를 계기로 만든 릴리스 게이트**
+
+- `scripts/smoke-check.mjs`: Electron dev 인스턴스를 remote-debugging-port로 띄워 CDP로 ① CDP 엔드포인트 ② 렌더 완료(innerText > 10자) ③ "문제가 발생했습니다" 부재 ④ 앱 셸 텍스트 존재 ⑤ `window.codebridge.getBoot()` JSON 응답 — 5단계 확인, 실패 시 exit 1. 로컬에서도 `npm run smoke:check`로 실행 가능.
+- `ci.yml`에 `Build frontend` → `Render smoke check` 단계 추가 — 이제 이 게이트를 통과 못한 릴리스는 배포 불가.
+- `main.cjs`: `webContents.on('console-message', ...)` → `logs/renderer.log`에 기록 (5MB 회전, 라인 1000자 제한) — 렌더러 크래시의 직접 증거 확보용.
+
+**기능**
+
+- 사이드바 "폴더 열기" 버튼 → `shell.openPath(projectDir)` — 에이전트가 수정한 폴더를 즉시 탐색기에서 확인.
+- 설정 "알림" 섹션: 질문/완료 토스트 on/off (기본 ON). 렌더러는 발화 시 getSettings로 게이트 (숨김 창에서만).
+- 설정 "긴 대화 안내 숨기기": `hideContextNote` → `CODEBRIDGE_NO_CONTEXT_NOTE=1` env → 브릿지가 "메시지 N개 쌓였습니다" 문구 생략. 변경 시 브릿지 자동 재시작 대상에 포함.
+- 테스트 훅: `AppState.force_limit_hit` — `CODEBRIDGE_FORCE_LIMIT_ONCE=1`로 시작하면 첫 요청의 limit_hit을 강제 → 자동 인수인계 체인(same_site → gemini)을 실제 한도 없이 실측 가능 (one-shot, 첫 요청에서 소비).
+
+**검증**
+
+- `node scripts/smoke-check.mjs` → **5/5 PASS** (로컬, v0.8.1 기준 인스턴스).
+- 기존 54개 브릿지 테스트 green, 프론트엔드 빌드 OK.

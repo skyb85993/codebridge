@@ -529,6 +529,13 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         (send_normal(&engine, &prompt, site, app).await, site)
     };
 
+    // 테스트 훅: CODEBRIDGE_FORCE_LIMIT_ONCE=1로 시작하면 한도 배너를 1회 강제로 흉내낸다
+    // (수동 인수인계와 같은 one-shot 패턴 — 자동 체인이 실제로 도는지 검증용).
+    if app.force_limit_hit.swap(false, Ordering::SeqCst) {
+        outcome.limit_hit = true;
+        println!("[browser] CODEBRIDGE_FORCE_LIMIT_ONCE — 한도 배너를 강제로 흉내냅니다");
+    }
+
     let mut raw = outcome.text;
     let mut blocks = outcome.code_blocks;
     let mut truncated = outcome.truncated;
@@ -604,7 +611,11 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             "\n\n(참고: 응답이 도중에 끊겼습니다. 파일 쓰기는 건너뛰었습니다 — \"이어서 계속\"이라고 보내면 이어집니다.)",
         );
     }
-    if n >= app.cfg.handover.thread_soft_limit {
+    // 설정 "긴 대화 안내 숨기기"(CODEBRIDGE_NO_CONTEXT_NOTE=1)면 N개 쌓였습니다 표기 생략
+    let hide_context_note = std::env::var("CODEBRIDGE_NO_CONTEXT_NOTE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !hide_context_note && n >= app.cfg.handover.thread_soft_limit {
         raw.push_str(&format!(
             "\n\n(참고: 이 스레드에 메시지가 {n}개 쌓였습니다. 한도 근접 시 자동 인수인계되며, 수동으로는 \"지금 인수인계\"라고 요청하세요.)"
         ));

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { FolderOpen, MessageSquarePlus, Search, Circle, Trash2 } from 'lucide-react';
+import { FolderOpen, Folder, MessageSquarePlus, Search, Circle, Trash2 } from 'lucide-react';
 import { SessionInfo, formatRelTime } from '../api';
 import type { HostProbe } from '../ipc';
 
@@ -12,6 +12,7 @@ interface SidebarProps {
   onPickProject: () => void;
   probe: HostProbe | null;
   onDelete: (id: string) => void | Promise<void>;
+  onOpenProjectFolder: () => void;
   onShowChrome: () => Promise<{
     ok: boolean;
     action?: string;
@@ -29,6 +30,7 @@ export default function Sidebar({
   onPickProject,
   probe,
   onDelete,
+  onOpenProjectFolder,
   onShowChrome,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
@@ -55,6 +57,13 @@ export default function Sidebar({
           <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-dim">
             프로젝트
           </span>
+          <button
+            className="rounded-md p-1 text-dim transition-colors hover:bg-panel2 hover:text-text"
+            title="프로젝트 폴더 열기"
+            onClick={onOpenProjectFolder}
+          >
+            <Folder size={13} />
+          </button>
           <button
             className="rounded-md p-1 text-dim transition-colors hover:bg-panel2 hover:text-text"
             title="프로젝트 폴더 변경…"
