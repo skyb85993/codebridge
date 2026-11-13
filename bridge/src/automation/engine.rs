@@ -141,6 +141,12 @@ pub struct CompletedPage {
     pub page: Page,
 }
 
+#[derive(Clone, Copy)]
+enum ImageOrDownload {
+    Image,
+    Download,
+}
+
 /// 표준 base64 디코더 (공백 허용, 패딩 필수). 실패 시 Err.
 #[cfg(test)]
 mod base64_tests {
@@ -894,14 +900,15 @@ impl Engine {
         self.send_and_await_site(prompt, Site::ChatGpt).await
     }
 
-    /// CODEBRIDGE_IMAGE 마커가 있으면 그것과 대응하는 이미지를 다운로드하여
-    /// 프로젝트 루트(현재 cwd) 기준 `path`에 저장하고,
+    /// CODEBRIDGE_IMAGE/CODEBRIDGE_DOWNLOAD 마커가 있으면 파일을 다운로드하여
+    /// 프로젝트 루트(현재 cwd) 기준 path에 저장하고,
     /// 마커를 "💾 path (N KB) 저장됨" 으로 교체한 텍스트를 돌려준다.
     ///
-    /// 마커 형식: `CODEBRIDGE_IMAGE {"path":"assets/logo.png"}` 한 줄에 하나씩.
-    /// 이미지 ↔ 마커 매칭은 등장 순서.
+    /// 형식:
+    ///   CODEBRIDGE_IMAGE {"path":"assets/logo.png"}                     — 이미지(DOM 순서 매칭)
+    ///   CODEBRIDGE_DOWNLOAD {"path":"downloads/x.pdf", "url":"https://..."} — GPT가 URL을 아는 외부 파일
     async fn persist_images(&self, page: &Page, text: &str, images: &[String]) -> String {
-        if images.is_empty() || !text.contains("CODEBRIDGE_IMAGE ") {
+        if !text.contains("CODEBRIDGE_") {
             return text.to_string();
         }
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -909,45 +916,71 @@ impl Engine {
         let mut img_idx = 0usize;
         for line in text.split('\n') {
             let trimmed = line.trim();
-            let Some(body) = trimmed.strip_prefix("CODEBRIDGE_IMAGE ") else {
+            // 공통 JSON 본문 추출
+            let marker = if let Some(body) = trimmed.strip_prefix("CODEBRIDGE_IMAGE ") {
+                Some((ImageOrDownload::Image, body))
+            } else if let Some(body) = trimmed.strip_prefix("CODEBRIDGE_DOWNLOAD ") {
+                Some((ImageOrDownload::Download, body))
+            } else {
+                None
+            };
+            let Some((kind, body)) = marker else {
                 out.push(line.to_string());
                 continue;
             };
-            // 마커 한 줄에서 JSON 본문 추출
             let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
-            let rel = parsed
-                .as_ref()
-                .and_then(|v| v.get("path").and_then(|p| p.as_str()))
-                .map(str::to_string);
+            let rel = parsed.as_ref().and_then(|v| v.get("path").and_then(|p| p.as_str())).map(str::to_string);
             let Some(rel) = rel else {
                 out.push(line.to_string());
                 continue;
             };
             let Some(rel) = crate::translate::lenient::sanitize_path(&rel) else {
-                out.push(format!("(이미지 경로 거부: {})", rel));
+                out.push(format!("(파일 경로 거부: {})", rel));
                 continue;
             };
-            let Some(url) = images.get(img_idx).cloned() else {
-                out.push(format!("(이미지 {}번째가 없습니다)", img_idx + 1));
-                continue;
-            };
-            img_idx += 1;
             let target = root.join(&rel);
             if !target.starts_with(&root) {
-                out.push(format!("(이미지 경로 거부: {})", rel));
+                out.push(format!("(파일 경로 거부: {})", rel));
                 continue;
             }
-            match self.download_image(page, &url, &target).await {
-                Ok(bytes) => out.push(format!("💾 {} ({} KB) 저장됨", rel, bytes / 1024)),
-                Err(e) => out.push(format!("(이미지 저장 실패 — {}: {})", rel, e)),
+            match kind {
+                ImageOrDownload::Image => {
+                    let Some(url) = images.get(img_idx).cloned() else {
+                        out.push(format!("(이미지 {}번째가 없습니다)", img_idx + 1));
+                        continue;
+                    };
+                    img_idx += 1;
+                    match self.download_via_cdp(page, &url, &target).await {
+                        Ok(bytes) => out.push(format!("💾 {} ({} KB) 저장됨", rel, bytes / 1024)),
+                        Err(e) => out.push(format!("(파일 저장 실패 — {}: {})", rel, e)),
+                    }
+                }
+                ImageOrDownload::Download => {
+                    let Some(url) = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("url").and_then(|u| u.as_str()))
+                        .map(str::to_string)
+                    else {
+                        out.push(format!("(다운로드 마커에 URL 없음: {})", rel));
+                        continue;
+                    };
+                    if !(url.starts_with("http://") || url.starts_with("https://")) {
+                        out.push(format!("(다운로드 URL이 http(s)가 아님: {})", rel));
+                        continue;
+                    }
+                    match self.download_via_cdp(page, &url, &target).await {
+                        Ok(bytes) => out.push(format!("💾 {} ({} KB) 저장됨", rel, bytes / 1024)),
+                        Err(e) => out.push(format!("(다운로드 실패 — {}: {})", rel, e)),
+                    }
+                }
             }
         }
         out.join("\n")
     }
 
-    /// 이미지 URL을 CDP fetch로 받아 base64로 디코드하여 파일에 쓴다.
+    /// 파일 URL을 CDP fetch로 받아 base64로 디코드하여 파일에 쓴다.
     /// (Chrome의 챗GPT 세션 쿠키를 그대로 사용하므로 로그인이 필요한 이미지 URL도 받을 수 있다)
-    async fn download_image(
+    async fn download_via_cdp(
         &self,
         page: &Page,
         url: &str,
@@ -978,14 +1011,14 @@ impl Engine {
         );
         let res = eval_str(page, &js).await?;
         let v: serde_json::Value = serde_json::from_str(&res)
-            .map_err(|e| EngineError::Page(format!("이미지 응답 파싱 실패: {e}")))?;
+            .map_err(|e| EngineError::Page(format!("다운로드 응답 파싱 실패: {e}")))?;
         if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
             let data = v
                 .get("data")
                 .and_then(|d| d.as_str())
-                .ok_or_else(|| EngineError::Page("이미지 데이터 없음".into()))?;
+                .ok_or_else(|| EngineError::Page("파일 데이터 없음".into()))?;
             let bytes = base64_decode(data)
-                .map_err(|e| EngineError::Page(format!("이미지 디코드 실패: {e}")))?;
+                .map_err(|e| EngineError::Page(format!("파일 디코드 실패: {e}")))?;
             std::fs::write(target, &bytes)
                 .map_err(|e| EngineError::Page(format!("파일 쓰기 실패: {e}")))?;
             Ok(bytes.len())
@@ -995,7 +1028,7 @@ impl Engine {
                 .map(|s| format!("HTTP {s}"))
                 .or_else(|| v.get("error").and_then(|s| s.as_str()).map(str::to_string))
                 .unwrap_or_else(|| "알 수 없는 오류".into());
-            Err(EngineError::Page(format!("이미지 다운로드 실패: {why}")))
+            Err(EngineError::Page(format!("파일 다운로드 실패: {why}")))
         }
     }
 }

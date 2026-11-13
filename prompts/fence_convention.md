@@ -25,11 +25,17 @@ TOOL question header=방향 question="무엇을 할까요?" options="A, B"
 
 CODEBRIDGE_IMAGE {"path":"assets/logo.png"}
 
+## 외부 URL의 파일을 다운로드할 때
+GPT가 어떤 파일의 URL을 알고 있고 그것을 이 프로젝트에 저장해야 하면 아래 형식으로 출력하세요:
+
+CODEBRIDGE_DOWNLOAD {"path":"downloads/spec.pdf", "url":"https://example.com/spec.pdf"}
+
 규칙:
-- 이미지 한 장당 한 줄, 생성 순서대로 path를 나열하세요.
-- path는 프로젝트 루트 기준 상대경로입니다 (예: `assets/logo.png`, `public/favicon.png`, `src/assets/icon.svg`).
-- 앱이 생성된 이미지를 다운로드해서 해당 경로에 자동으로 저장합니다.
-- CODEBRIDGE_IMAGE 줄은 설명 없이 그 형식만 출력하세요.
+- 한 줄에 하나씩, 생성/다운로드 순서대로 path를 나열하세요.
+- path는 프로젝트 루트 기준 상대경로입니다 (예: `assets/logo.png`, `public/favicon.png`, `downloads/file.pdf`).
+- CODEBRIDGE_IMAGE는 마지막 응답의 <img> 태그 순서로 자동 매칭합니다. URL을 따로 적지 않아도 됩니다.
+- CODEBRIDGE_DOWNLOAD는 GPT가 아는 URL을 다운로드하여 저장합니다.
+- 앱이 해당 경로로 자동 저장합니다. 저장 결과는 `💾 path (N KB)` 로 표시됩니다.
 
 사용자: 이 프로젝트 로고 이미지를 만들어줘
 당신: CODEBRIDGE_IMAGE {"path":"assets/logo.png"}
