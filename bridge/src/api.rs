@@ -395,7 +395,7 @@ fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response>
         return Some(ack_response(
             app,
             req,
-            "도구 호출 한도에 도달했습니다. 필요한 부분을 확인하고 이어서 알려주세요.",
+            "작업이 너무 길어 일단 멈췄습니다. 이어서 진행하시려면 \"계속해줘\"라고 보내주세요.",
         ));
     }
     None
@@ -442,7 +442,8 @@ fn tool_turn_count(req: &ChatRequest) -> usize {
 }
 
 /// 도구 루프 안전 한도. 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
-const MAX_TOOL_TURNS: usize = 10;
+/// 표준 웹페이지는 파일 5~10개 작성이 필요해 10에서는 너무 일찍 끊겼다.
+const MAX_TOOL_TURNS: usize = 40;
 
 /// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
 async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
