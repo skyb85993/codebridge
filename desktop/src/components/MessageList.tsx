@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { Loader2 } from 'lucide-react';
 import type { ChatMessage } from '../api';
 import MessageRow from './MessageRow';
 
@@ -36,7 +37,7 @@ export default function MessageList({ messages, busy, onAnswer, onRunApprovedShe
   return (
     <div ref={containerRef} onScroll={onScroll} className="nice-scroll min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex max-w-4xl flex-col gap-4 px-6 py-6">
-        {visible.length === 0 && (
+        {visible.length === 0 && !busy && (
           <div className="mt-16 flex flex-col items-center gap-4 text-center fade-up">
             <div className="text-grad text-4xl font-extrabold tracking-tight">무엇을 만들까요?</div>
             <p className="max-w-md text-[13px] leading-relaxed text-dim">
@@ -57,10 +58,17 @@ export default function MessageList({ messages, busy, onAnswer, onRunApprovedShe
         {visible.map((m) => (
           <MessageRow key={m.id} message={m} onAnswer={onAnswer} onRunApprovedShell={onRunApprovedShell} />
         ))}
-        {busy && visible.length > 0 && !isLastAssistantDone(visible) && (
-          <div className="flex items-center gap-2 pl-1 text-[11.5px] text-dim">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-            답변을 받아오는 중…
+        {busy && !isLastAssistantDone(visible) && (
+          <div className="fade-up flex justify-start">
+            <div className="bubble-assistant flex items-center gap-2.5 rounded-2xl rounded-bl-md px-4 py-3">
+              <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+              <span className="text-[12.5px] font-medium text-text">처리 중…</span>
+              <span className="flex items-center gap-1">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" style={{ animationDelay: '0ms' }} />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" style={{ animationDelay: '150ms' }} />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" style={{ animationDelay: '300ms' }} />
+              </span>
+            </div>
           </div>
         )}
         <div ref={bottomRef} />

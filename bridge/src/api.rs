@@ -374,31 +374,53 @@ fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
 }
 
 /// 이전 tool 결과 직후(마지막 메시지가 role=tool): 모든 도구를 모델에게 다시 보여주고 계속 이어가게 한다.
-/// 실패 징후가 있으면 재시도, 없어도 다음 작업을 모델이 정할 수 있게 계속 호출한다 (MAX_TOOL_TURNS가 무한 루프를 막는다).
-/// 작업이 끝나면 모델이 tool 없는 텍스트("완료" 등)로 답하고 루프가 자연 종료된다.
+/// 도구 한도는 두지 않는다 — 작업이 끝나면 모델이 tool 없는 답("완료" 등)을 내며 루프가 자연 종료된다.
+/// (별도 상한 없음. 같은 도구를 같은 인자로 4연속 반복하는 이른바 "무한 루프"일 때만 끊는다.)
 fn ack_response_for_tools(app: &AppState, req: &ChatRequest) -> Option<Response> {
     let tool_count = tool_turn_count(req);
     if tool_count == 0 {
         return None;
     }
-    println!(
-        "[browser] tool-turn count={} (limit={}, remaining={})",
-        tool_count,
-        MAX_TOOL_TURNS,
-        MAX_TOOL_TURNS.saturating_sub(tool_count)
-    );
-    if tool_count >= MAX_TOOL_TURNS {
-        println!(
-            "[browser] MAX_TOOL_TURNS 도달 (tool_count={} limit={}) — 모델 호출 중단, 마무리 응답",
-            tool_count, MAX_TOOL_TURNS
-        );
+    println!("[browser] tool-turn count={}", tool_count);
+    let sigs = last_tool_signatures(req, 4);
+    if sigs.len() == 4 && sigs.iter().all(|s| s == &sigs[0]) {
+        println!("[browser] 동일 도구 4연속 반복 감지 — 중단");
         return Some(ack_response(
             app,
             req,
-            "작업이 너무 길어 일단 멈췄습니다. 이어서 진행하시려면 \"계속해줘\"라고 보내주세요.",
+            "같은 도구를 계속 반복하다가 멈췄습니다. 이어서 진행하시려면 \"계속해줘\"라고 보내주세요.",
         ));
     }
     None
+}
+
+/// 마지막 n개의 tool 호출 시그니처("이름:인자")를 최신순으로 돌려준다.
+fn last_tool_signatures(req: &ChatRequest, n: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in req.messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let Some(tcs) = &m.tool_calls else { continue };
+        let Some(arr) = tcs.as_array() else { continue };
+        for tc in arr {
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let args = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            out.push(format!("{}:{}", name, args));
+            if out.len() >= n {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 fn truncate_line(s: &str, n: usize) -> String {
@@ -440,10 +462,6 @@ fn tool_turn_count(req: &ChatRequest) -> usize {
         .map(|idx| req.messages[idx + 1..].iter().filter(|m| m.role == "tool").count())
         .unwrap_or_else(|| req.messages.iter().filter(|m| m.role == "tool").count())
 }
-
-/// 도구 루프 안전 한도. 이 횟수를 넘기면 모델을 더 부르지 않고 마무리한다.
-/// 표준 웹페이지는 파일 5~10개 작성이 필요해 10에서는 너무 일찍 끊겼다.
-const MAX_TOOL_TURNS: usize = 40;
 
 /// browser 모드: 실제 CDP 자동화 경로 (Phase 1~3).
 async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
