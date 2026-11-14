@@ -14,6 +14,10 @@ const POLL_MS = 700;
 const IDLE_PROBE_MS = 5000;
 const IDLE_SESSIONS_MS = 10000;
 const BUSY_PROBE_MS = 30000;
+// busy 상태에서 이 시간 동안 메시지가 전혀 바뀌지 않으면 대기를 중단한다.
+// (opencode 세션이 서버 측에서 죽으면 '처리 중'이 영원히 멈춰 보이던 문제 방지)
+// bridge의 한 턴 마감이 180초이므로, 240초면 정상 턴이 끊길 일은 없다.
+const BUSY_STALL_MS = 240000;
 
 export default function App() {
   const [projectDir, setProjectDir] = useState<string | null | undefined>(undefined);
@@ -43,6 +47,9 @@ export default function App() {
   // (카드로 답장을 보내도 이전 assistant의 stop이 목록에 남아 있어서, 그것만 보고 풀면
   //   사용자 메시지만 있는 상태에서 busy가 꺼져 폴링이 멈춘다)
   const busyAssistantRef = useRef<string | null>(null);
+  // busy 중 마지막으로 메시지가 갱신된 시각 — stall watchdog 기준
+  const lastActivityRef = useRef(Date.now());
+  const lastMessagesJsonRef = useRef('');
 
   // ---------- 부팅 ----------
   useEffect(() => {
@@ -101,10 +108,16 @@ export default function App() {
   }, [projectDir, refreshSessions]);
 
   // ---------- 메시지 로드 ----------
+  // stall watchdog: 실제 내용이 바뀔 때만 lastActivity 갱신 (폴링 성공만으로는 갱신하지 않는다)
   const loadMessages = useCallback(async (id: string) => {
     try {
       const msgs = await api.getMessages(id);
-      setMessages(msgs);
+      const serialized = JSON.stringify(msgs);
+      if (serialized !== lastMessagesJsonRef.current) {
+        lastMessagesJsonRef.current = serialized;
+        setMessages(msgs);
+        lastActivityRef.current = Date.now();
+      }
     } catch {
       setMessages([]);
     }
@@ -210,6 +223,8 @@ export default function App() {
     // 빈 채팅 상태로 전환 (세션은 첫 메시지에서 생성)
     setActiveId(null);
     setMessages([]);
+    lastMessagesJsonRef.current = '';
+    lastActivityRef.current = Date.now();
   }, []);
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
@@ -230,6 +245,7 @@ export default function App() {
         return;
       }
       setBusy(true);
+      lastActivityRef.current = Date.now();
       busyAssistantRef.current =
         [...messagesRef.current].reverse().find((m) => m.type === 'assistant')?.id ?? null;
 
@@ -259,6 +275,30 @@ export default function App() {
     if (exportNoteTimer.current) window.clearTimeout(exportNoteTimer.current);
     exportNoteTimer.current = window.setTimeout(() => setExportNote(null), 4000);
   }, []);
+
+  // ---------- busy stall watchdog ----------
+  // opencode 세션이 서버 측에서 실패/중단되면 메시지가 더 이상 바뀌지 않고
+  // busy만 영원히 남는다. BUSY_STALL_MS 동안 무변화면 대기를 풀고 알린다.
+  useEffect(() => {
+    if (!busy) return;
+    const t = setInterval(() => {
+      if (Date.now() - lastActivityRef.current > BUSY_STALL_MS) {
+        setBusy(false);
+        flashNote(
+          '4분 동안 응답이 없어 대기를 중단했어요. 요청이 실패했을 수 있으니, 잠시 후 다시 보내거나 새 대화로 시도해 주세요.',
+        );
+        window.codebridge
+          .notify({
+            title: 'CodeBridge',
+            body: '응답이 너무 오래 걸려 처리 중 표시를 해제했어요.',
+          })
+          .catch(() => {
+            /* 알림 실패 무시 */
+          });
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, [busy, flashNote]);
 
   // 대화 내보내기 — 현재 세션을 마크다운으로 저장
   const exportSession = useCallback(async () => {

@@ -416,8 +416,16 @@ async function startServices(dir) {
   ensureDir(LOG_DIR);
   ensureOpencodeJson(dir);
   await spawnBridge(dir);
+  // opencode는 부팅 직후 webchat 프로바이더(브릿지 /v1/models)를 조회한다.
+  // 브릿지가 9224에 바인딩되기 전에 opencode가 조회하면 opencode는 모델을
+  // "unavailable"로 표시하고 세션이 실패한다 (실사용 사례: 3분간 '처리 중' 멈춤,
+  //  opencode.log "SessionRunnerModel.ModelUnavailableError").
+  // 반드시 브릿지 health를 기다린 뒤에 opencode를 띄운다.
+  const t0 = Date.now();
+  const bridgeOk = await waitForBridge(30000);
+  appendLog('boot', `[boot] bridge healthy=${bridgeOk} after ${Date.now() - t0}ms\n`);
   await spawnOpencode(dir);
-  const [bridgeOk, opencodeOk] = await Promise.all([waitForBridge(), waitForOpencode()]);
+  const opencodeOk = await waitForOpencode(90000);
   appendLog('boot', `[boot] services bridgeOk=${bridgeOk} opencodeOk=${opencodeOk}\n`);
   return bridgeOk && opencodeOk;
 }
@@ -900,7 +908,9 @@ ipcMain.handle('app:resetChromeProfile', async () => {
 ipcMain.handle('app:restartBridge', async () => {
   if (!projectDir) return { ok: false, error: '프로젝트 폴더가 선택되지 않았습니다.' };
   await spawnBridge(projectDir);
-  return { ok: true };
+  const ok = await waitForBridge(30000);
+  appendLog('boot', `[boot] restartBridge bridge healthy=${ok}\n`);
+  return ok ? { ok: true } : { ok: false, error: '브릿지가 30초 내에 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.' };
 });
 
 // 렌더러 알림 — 질문 카드 도착/작업 완료 시 토스트. 클릭하면 창을 띄운다.

@@ -1,5 +1,23 @@
 # 릴리즈 노트
 
+## v0.20.0 (2026-11-14)
+
+**문제 원인 (실사용에서 "아무것도 안 되고 로딩만 계속" 멈추던 문제)**
+- 로그에서 확인: opencode가 부팅 직후 webchat 프로바이더(브릿지 /v1/models)를 조회하는데, **브릿지가 아직 9224에 바인딩되기 전에** opencode가 조회하면서 연결이 실패 → opencode가 약 30초 재시도 후 webchat-chatgpt 모델을 "unavailable"로 표시 → 세션이 `SessionRunnerModel.ModelUnavailableError`로 실패 → UI에는 아무 오류도 안 보이고 "처리 중"만 영원히 표시되던 문제.
+- opencode.log 증거: `12:06:41.542Z level=ERROR … ModelUnavailableError: Model unavailable: webchat/webchat-chatgpt`
+- boot.log 증거: bridge 2회 재시작 후 Chrome 재 spawn — 레이스가 재현되기 쉬운 타이밍.
+
+**수정**
+- **브릿지가 health에 응답한 뒤에만 opencode를 띄운다** (`startServices` — spawnBridge → waitForBridge(30s) → spawnOpencode 순서로 변경). 부팅 레이스 제거.
+- **처리 중 stall watchdog**: busy 상태에서 4분(= bridge 턴 마감 180초 + 여유 60초) 동안 메시지가 전혀 바뀌지 않으면 대기를 스스로 해제하고, 안내 노트 + Windows 알림을 표시. 서버 측 세션 실패가 화면에 아무 표시 없이 묵묵히 멈추는 상황을 끝낸다.
+- 메시지 폴링을 "실제 내용이 바뀔 때만 갱신" 방식으로 변경 (JSON 핑거프린트 비교) — 불필요한 재렌더 억제 + watchdog 기준을 정확히 한다.
+- `app:restartBridge`도 브릿지 health를 30초 기다린 뒤 성공/실패를 보고하도록 변경 (실패 시 명확한 오류 메시지).
+
+**로그**
+- `[boot] bridge healthy=true after Nms` — 브릿지 준비 시간 기록
+- `[boot] services bridgeOk=… opencodeOk=…` — 기존 라인 유지
+- `[boot] restartBridge bridge healthy=…` — 재시작 성공 여부 기록
+
 ## v0.19.0 (2026-11-14)
 
 **수정**

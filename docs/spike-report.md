@@ -434,6 +434,28 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.20.0 — 부팅 레이스 제거 + stall watchdog (2026-11-14)
+
+**문제 확인 (로그 근거)**
+
+- `opencode.log`: `12:06:41.542Z level=ERROR … SessionRunnerModel.ModelUnavailableError: Model unavailable: webchat/webchat-chatgpt`
+- `boot.log`: bridge가 2회 재시작되는 동안 Chrome을 재 spawn — opencode가 브릿지 바인딩 전에 provider 조회 → 30초 재시도 → 모델 unavailable → 세션 실패. UI는 오류 표시 없이 "처리 중"만 무한.
+
+**수정**
+
+- `startServices`: spawnBridge → `waitForBridge(30s)` → spawnOpencode 순차 실행 (부팅 레이스 제거).
+- 렌더러에 busy stall watchdog: 4분간 메시지 무변화 시 busy 해제 + 안내 노트 + Windows 알림.
+- 폴링 diff 기반 갱신 (JSON 핑거프린트) — 무변경 재렌더 제거.
+- `app:restartBridge`도 health 대기 후 결과 보고.
+
+**한계 / 후속**
+
+- 84개 메시지가 쌓인 ChatGPT 대화의 컨텍스트 포화(GPT 인라인 길이 경고)는 이 릴리스로 해결되지 않는다 — 별도 작업으로 "새 채팅으로 리셋" 흐름이 필요하다.
+
+**검증**
+
+- `npm run build:frontend` OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
 ## v0.19.0 — 예산 제거 + 처리 중 표시 (2026-11-14)
 
 **수정**
