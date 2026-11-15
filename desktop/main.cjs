@@ -263,6 +263,10 @@ function rotateLargeLog(name, capBytes = 5 * 1024 * 1024) {
   }
 }
 
+// 브릿지 비정상 종료 추적 — 분당 3회까지만 자동 재시작하고, 그 이상이면 알림 후 중단.
+// (before-quit에서 죽인 경우는 appQuitting=true라 재시작하지 않는다)
+const bridgeRestartTimes = [];
+
 async function spawnBridge(cwd) {
   if (bridgeProc) {
     killChild(bridgeProc);
@@ -289,6 +293,38 @@ async function spawnBridge(cwd) {
   });
   bridgeProc.on('exit', (code) => {
     appendLog('bridge', `[bridge] exited code=${code}\n`);
+    if (appQuitting) return;
+    const now = Date.now();
+    while (bridgeRestartTimes.length && now - bridgeRestartTimes[0] > 60_000) {
+      bridgeRestartTimes.shift();
+    }
+    if (bridgeRestartTimes.length >= 3) {
+      appendLog(
+        'bridge',
+        '[bridge] 1분 내 3회 비정상 종료 — 자동 재시작 중단 (9224 충돌 등). 앱을 종료 후 다시 실행해 주세요.\n',
+      );
+      try {
+        new Notification({
+          title: 'CodeBridge',
+          body: '연결 서비스가 반복 실패했습니다. 앱을 종료 후 다시 실행해 주세요.',
+          silent: false,
+        });
+      } catch {
+        /* 알림 미지원 무시 */
+      }
+      return;
+    }
+    bridgeRestartTimes.push(now);
+    appendLog('bridge', `[bridge] 비정상 종료 — 자동 재시작 시도 ${bridgeRestartTimes.length}/3\n`);
+    (async () => {
+      try {
+        await spawnBridge(cwd);
+        const ok = await waitForBridge(30000);
+        appendLog('boot', `[boot] auto-restart bridge healthy=${ok}\n`);
+      } catch (e) {
+        appendLog('bridge', `[bridge] auto-restart failed: ${e && e.message ? e.message : e}\n`);
+      }
+    })();
   });
   appendLog('bridge', `[bridge] spawn pid=${bridgeProc.pid} cwd=${cwd}\n`);
   return bridgeProc;
@@ -299,6 +335,7 @@ async function spawnOpencode(cwd) {
     killChild(opencodeProc);
     await waitChildExit(opencodeProc, 8000);
   }
+  rotateLargeLog('opencode.log');
   const { stream } = logStream('opencode');
   servePassword = require('crypto').randomBytes(24).toString('base64url');
   const args = ['serve', '--hostname', '127.0.0.1', '--port', String(SERVE_PORT)];

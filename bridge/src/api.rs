@@ -524,8 +524,27 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         .unwrap_or_default();
     let manual_flag = app.manual_handover.swap(false, Ordering::SeqCst);
     let forced_handover = manual_flag || latest_user_hoist.contains("지금 인수인계");
+    // 스레드 길이 자동 인수인계 — 기존에는 "한도 근접 시 자동 인수인계"라는 안내 문구만
+    // 있었고 실제로는 동작하지 않았다 (85개 쌓인 스레드에 계속 전송되던 문제).
+    // 설정 "인수인계 기준 메시지 수"(settings.handoverLimit → CODEBRIDGE_HANDOVER_LIMIT, 기본 25)를
+    // 넘으면 새 채팅으로 컨텍스트를 압축해 넘긴다.
+    let auto_len_handover = !forced_handover
+        && app.cfg.handover.mode == "auto"
+        && n >= app.cfg.handover.thread_soft_limit;
+    if auto_len_handover {
+        println!(
+            "[browser] thread length {n} >= soft limit {} — 자동 인수인계 (새 대화로 이어갑니다)",
+            app.cfg.handover.thread_soft_limit
+        );
+        arc.log_handover_event(
+            "auto_len_handover",
+            &format!("msgs={n} limit={}", app.cfg.handover.thread_soft_limit),
+        );
+    }
 
-    let (mut outcome, mut active_site) = if forced_handover && app.cfg.handover.mode == "auto" {
+    // 인수인계가 실제 실행된 경우 사용자에게 알리는 한 줄 (원격 세션 오해 방지)
+    let mut handover_notice: Option<String> = None;
+    let (mut outcome, mut active_site) = if (forced_handover || auto_len_handover) && app.cfg.handover.mode == "auto" {
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
             .messages
@@ -552,15 +571,26 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
         arc.log_handover_event(
             "handover_started",
-            &format!("site={site:?} limit_hit=false manual=true msgs={}", req.messages.len()),
+            &format!(
+                "site={site:?} limit_hit=false manual={} auto_len={} msgs={}",
+                forced_handover,
+                auto_len_handover,
+                req.messages.len()
+            ),
         );
         match run_handover_chain(&engine, app, &arc, site, &pack).await {
             Ok(pair) => {
                 arc.log_handover_event("chain_ok", &format!("site={:?}", pair.1));
+                handover_notice = Some(
+                    "(참고: 대화가 길어져 새 채팅으로 컨텍스트를 압축해 인수인계했습니다.)".to_string(),
+                );
                 pair
             }
             Err(e) => {
                 arc.log_handover_event("chain_failed", &format!("{e} — 원본 요청으로 폴백"));
+                handover_notice = Some(
+                    "(참고: 새 채팅 인수인계에 실패해 기존 대화로 이어갔습니다.)".to_string(),
+                );
                 (send_normal(&engine, &prompt, site, app).await, site)
             }
         }
@@ -649,6 +679,9 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         raw.push_str(
             "\n\n(참고: 응답이 도중에 끊겼습니다. 파일 쓰기는 건너뛰었습니다 — \"이어서 계속\"이라고 보내면 이어집니다.)",
         );
+    }
+    if let Some(notice) = handover_notice {
+        raw.push_str(&format!("\n\n{notice}"));
     }
     // 설정 "긴 대화 안내 숨기기"(CODEBRIDGE_NO_CONTEXT_NOTE=1)면 N개 쌓였습니다 표기 생략
     let hide_context_note = std::env::var("CODEBRIDGE_NO_CONTEXT_NOTE")

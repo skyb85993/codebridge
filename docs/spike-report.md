@@ -434,6 +434,27 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.21.0 — 스레드 자동 인수인계 + 브릿지 자동 재시작 (2026-11-15)
+
+**문서화되어 있었지만 동작하지 않던 자동 인수인계를 실제 구현**
+
+- `thread_soft_limit`을 넘으면 `same_site_new_chat` 체인으로 자동 인수인계 (이전: "한도 근접 시 자동 인수인계되며" 문구만 있고 무동작).
+- 성공/실패 모두 사용자에게 보이는 한 줄 표시, 실패 시 기존 대화로 폴백.
+- `bump_counter` 누적값 ≥ 설정값이면 전송 전 체인 수행 (세션 84개 초과 상태가 그대로 풀림).
+
+**브릿지 자동 재시작 (분당 3회 제한)**
+
+- 비정상 종료 시 `spawnBridge` 자동 호출, health 대기 후 `[boot] auto-restart bridge healthy=…` 기록. 3회 초과 시 알림 + 중단.
+- `appQuitting`(정상 종료)에서는 재시작하지 않음.
+
+**로그**
+
+- `opencode.log` 5MB 회전 (`opencode.log.1`).
+
+**검증**
+
+- cargo 56/56 green, `node --check main.cjs` OK.
+
 ## v0.20.0 — 부팅 레이스 제거 + stall watchdog (2026-11-14)
 
 **문제 확인 (로그 근거)**
