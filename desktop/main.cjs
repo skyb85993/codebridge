@@ -59,6 +59,26 @@ let opencodeProc = null;
 let servePassword = '';
 let projectDir = '';
 let appQuitting = false;
+// 단일 인스턴스 보장 — 두 인스턴스가 뜨면 둘 다 브릿지(9224)·opencode(7891)를
+// spawn해 하나가 조용히 죽고, 살아남은 쪽 헬스체크가 죽은 쪽을 통과시켜 요청이 멈춘다.
+// (실측: v0.21.0 설치 직후 이중 실행으로 브릿지 2개가 동시에 뜨고 하나가 bind 실패로 죽음)
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (gotSingleInstanceLock) {
+  app.on('second-instance', () => {
+    try {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    } catch {
+      /* 창 포커스 실패 무시 */
+    }
+  });
+} else {
+  appendLog('boot', '[boot] another instance is running — quitting this one (no services spawned)\n');
+  app.whenReady().then(() => app.quit());
+}
 let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
 let updateVersion = null; // 사용 가능한 최신 버전 (예: "0.4.1")
 
@@ -1120,6 +1140,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    if (!gotSingleInstanceLock) return; // 이중 인스턴스 — 아무것도 spawn하지 않는다
     try {
       appendLog('boot', '[boot] whenReady: start\n');
       ensureDir(DATA_DIR);
@@ -1146,6 +1167,7 @@ if (!gotLock) {
   });
 
   app.on('before-quit', () => {
+    if (!gotSingleInstanceLock) return; // 이중 인스턴스 — 첫 인스턴스의 Chrome/브릿지를 죽이지 않는다
     appQuitting = true;
     killChild(bridgeProc);
     killChild(opencodeProc);
