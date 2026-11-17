@@ -242,6 +242,28 @@ pub async fn show_chrome(
     }
 }
 
+/// ChatGPT 새 채팅으로 초기화합니다 — 버튼 한 번으로 누적 스레드를 비웁니다.
+/// (인수인계 팩 없이 단순 리셋: counter도 초기화)
+pub async fn new_chat(State(app): State<AppState>) -> Json<Value> {
+    let workspace = std::env::current_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    let arc = archive::Archive::new(&workspace);
+    let engine = automation::engine::Engine::new(app.cfg.automation.cdp_port);
+    match engine
+        .rotate_new_chat_site(automation::engine::Site::ChatGpt)
+        .await
+    {
+        Ok(_) => {
+            arc.reset_counter();
+            println!("[browser] /v1/chrome/newchat — ChatGPT 새 채팅으로 초기화 (thread counter reset)");
+            arc.log_handover_event("manual_new_chat", "사용자가 새 채팅 버튼으로 스레드 초기화");
+            Json(json!({ "ok": true, "action": "new-chat" }))
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 /// 전용 Chrome을 다시 숨깁니다 (보이기로 꺼낸 창/팝업을 화면에서 치움).
 pub async fn hide_chrome(
     Query(q): Query<std::collections::HashMap<String, String>>,

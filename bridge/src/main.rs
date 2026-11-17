@@ -27,7 +27,12 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_target(false).init();
+    // chromiumoxide의 "WS Invalid message" WARN 스팸(초당 수백 줄)을 끈다.
+    // 잘못된 CDP 메시지는 무시해도 동작에 영향이 없고(내부적으로 skip 처리),
+    // 우리 로그(println!/tracing info)는 그대로 남는다. RUST_LOG로 재정의 가능.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,chromiumoxide=off"));
+    tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
 
     let cfg_path = std::env::var("CODEBRIDGE_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
     let cfg = cfg::Config::load(&cfg_path);
@@ -43,6 +48,7 @@ async fn main() {
         .route("/v1/handover/events", get(api::handover_events))
         .route("/v1/chrome/show", get(api::show_chrome))
         .route("/v1/chrome/hide", get(api::hide_chrome))
+        .route("/v1/chrome/newchat", get(api::new_chat))
         .with_state(AppState {
             cfg: Arc::new(cfg),
             manual_handover: Arc::new(AtomicBool::new(false)),

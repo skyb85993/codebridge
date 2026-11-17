@@ -300,6 +300,49 @@ export default function App() {
     return () => clearInterval(t);
   }, [busy, flashNote]);
 
+  // ---------- opencode 서버 측 세션 오류 즉시 반영 ----------
+  // bridge 실패/모델 unavailable 같은 서버 측 오류는 메시지가 더 오지 않아
+  // busy만 영원히 남는다. main 프로세스가 /api/event를 구독해 포워딩한 이벤트를
+  // 받으면 즉시 busy를 풀고 알린다. (4분 watchdog보다 훨씬 빠름)
+  useEffect(() => {
+    const off = window.codebridge.onSessionError?.(
+      (payload: { sessionID?: string; message?: string }) => {
+        const cur = activeId;
+        if (payload?.sessionID && cur && payload.sessionID !== cur) {
+          // 다른 세션의 오류 — 현재 대화 busy는 그대로 둔다
+          return;
+        }
+        setBusy(false);
+        const msg =
+          payload?.message && payload.message.trim()
+            ? payload.message.trim()
+            : 'opencode 세션이 오류로 중단됐어요.';
+        flashNote(`요청이 실패했어요 — ${msg.slice(0, 120)} 잠시 후 다시 보내거나 새 대화로 시도해 주세요.`);
+        window.codebridge
+          .notify({ title: 'CodeBridge', body: '요청이 오류로 중단됐어요. 앱에서 확인해 주세요.' })
+          .catch(() => {
+            /* 알림 실패 무시 */
+          });
+      },
+    );
+    return off;
+  }, [activeId, flashNote]);
+
+  // ---------- ChatGPT 새 채팅 초기화 ----------
+  const handleNewChat = useCallback(async () => {
+    flashNote('ChatGPT 새 채팅을 여는 중…');
+    try {
+      const r = await window.codebridge.newChat();
+      flashNote(
+        r?.ok
+          ? '새 채팅으로 초기화했어요. 다음 요청부터 새 대화를 씁니다.'
+          : r?.error || '새 채팅을 여는 데 실패했어요. 전용 Chrome 창에서 로그인 상태를 확인해 주세요.',
+      );
+    } catch {
+      flashNote('새 채팅을 여는 데 실패했어요.');
+    }
+  }, [flashNote]);
+
   // 대화 내보내기 — 현재 세션을 마크다운으로 저장
   const exportSession = useCallback(async () => {
     if (!activeId) return;
@@ -550,7 +593,7 @@ export default function App() {
 
   return (
     <div className="app-bg flex h-screen w-screen flex-col overflow-hidden">
-      <TitleBar version={version} title={activeSession?.title ?? '새 대화'} onOpenSettings={openSettings} />
+      <TitleBar version={version} title={activeSession?.title ?? '새 대화'} onOpenSettings={openSettings} onNewChat={handleNewChat} />
       <UpdateBanner />
       {onboarded === false && (
         <div className="relative shrink-0 border-b border-lineSoft bg-panel/90 backdrop-blur-xl">

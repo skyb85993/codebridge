@@ -199,6 +199,16 @@ fn js_string(s: &str) -> String {
         .replace('\u{2029}', "\\u2029")
 }
 
+/// 보이는(visible) 컴포저를 반환하는 JS 표현식을 만든다.
+/// chatgpt.com은 같은 셀렉터에 비가시(ProseMirror) 노드를 먼저 두는 경우가 있어
+/// querySelector 첫 매치를 쓰면 텍스트가 화면 밖 노드로 들어가 "컴포저가 비어 있음"으로 실패한다.
+fn visible_composer_expr(sel: &str) -> String {
+    format!(
+        r#"(function(){{const all=[...document.querySelectorAll({sel})];const vis=all.filter(el=>{{const r=el.getBoundingClientRect();const cs=getComputedStyle(el);return r.width>0&&r.height>0&&cs.visibility!=='hidden'&&cs.display!=='none';}});return vis[vis.length-1]??null;}})()"#,
+        sel = js_string(sel)
+    )
+}
+
 async fn eval_str(page: &Page, js: &str) -> Result<String, EngineError> {
     let v = page
         .evaluate(js)
@@ -338,7 +348,10 @@ impl Engine {
             }
             let r = eval_str(
                 page,
-                &format!(r#"String(!!document.querySelector({sel}))"#, sel = js_string(sel)),
+                &format!(
+                    r#"String(!!{vis})"#,
+                    vis = visible_composer_expr(sel)
+                ),
             )
             .await?;
             if r == "true" {
@@ -354,14 +367,14 @@ impl Engine {
             page,
             &format!(
                 r#"(() => {{
-                    const el = document.querySelector({sel});
+                    const el = {vis};
                     if (!el) return 'missing';
                     el.focus();
                     document.execCommand('selectAll', false, null);
                     document.execCommand('delete', false, null);
                     return 'cleared';
                 }})()"#,
-                sel = js_string(sel)
+                vis = visible_composer_expr(sel)
             ),
         )
         .await?;
@@ -477,11 +490,11 @@ impl Engine {
         };
         let js = format!(
             r#"(() => JSON.stringify({{
-                composer: !!document.querySelector({sel}),
+                composer: !!{vis},
                 url: location.href,
                 title: document.title
             }}))()"#,
-            sel = js_string(sel)
+            vis = visible_composer_expr(sel)
         );
         let raw = eval_str(&page, &js).await?;
         drop(browser);
@@ -711,19 +724,25 @@ impl Engine {
         .unwrap_or_default();
 
         // 입력 — execCommand가 숨김 창 + 새 페이지에서 실패할 수 있어 3단계 폴백을 쓴다.
-        // 삽입 후 컴포저 내용을 읽어 실제로 반영됐는지 확인하고, 안 됐으면 잠시 후 재시도한다.
+        // 중요: chatgpt.com은 같은 셀렉터에 비가시 ProseMirror 노드를 먼저 둔다.
+        //       보이는(visible) 컴포저만 대상으로 하며, 삽입 전 잔여 텍스트를 지운 뒤 넣는다.
         let mut inserted = false;
         for attempt in 1..=3 {
             let insert = format!(
                 r#"(() => {{
-                    const el = document.querySelector({sel});
+                    const el = {vis};
                     if (!el) return 'missing';
                     el.focus();
+                    // 잔여 초안 제거 (이전 자동화가 남긴 텍스트가 섞이지 않도록)
+                    try {{
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('delete', false, null);
+                    }} catch (e) {{}}
                     // ① execCommand('insertText')
                     try {{
                         if (document.execCommand && document.execCommand('insertText', false, {text})) return 'execCommand';
                     }} catch (e) {{}}
-                    // ② ClipboardEvent paste 시뮬레이션 (새 페이지/숨김 창에서 더 잘 동작)
+                    // ② ClipboardEvent paste 시뮬레이션 (ProseMirror paste 핸들러가 소비)
                     try {{
                         const dt = new DataTransfer();
                         dt.setData('text/plain', {text});
@@ -744,17 +763,17 @@ impl Engine {
                         return 'failed';
                     }}
                 }})()"#,
-                sel = js_string(sel.composer_sel),
+                vis = visible_composer_expr(sel.composer_sel),
                 text = js_string(prompt),
             );
             let r = eval_str(&page, &insert).await?;
             if r != "missing" && r != "failed" {
-                // 삽입 결과 확인 (contenteditable/textarea 모두 커버)
+                // 삽입 결과 확인 — 보이는 컴포저만 읽는다 (첫 매치 비가시 노드 방지)
                 let check = eval_str(
                     &page,
                     &format!(
-                        r#"(() => {{ const el = document.querySelector({sel}); if (!el) return ''; return el.innerText !== undefined ? el.innerText : (el.value ?? ''); }})()"#,
-                        sel = js_string(sel.composer_sel)
+                        r#"(() => {{ const el = {vis}; if (!el) return ''; return el.innerText !== undefined ? el.innerText : (el.value ?? ''); }})()"#,
+                        vis = visible_composer_expr(sel.composer_sel)
                     ),
                 )
                 .await

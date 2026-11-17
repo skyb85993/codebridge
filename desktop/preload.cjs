@@ -74,4 +74,12 @@ contextBridge.exposeInMainWorld('codebridge', {
   exportSession(payload) {
     return ipcRenderer.invoke('app:exportSession', payload);
   },
+  newChat() {
+    return ipcRenderer.invoke('app:newChat');
+  },
+  onSessionError(callback) {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('opencode:sessionError', listener);
+    return () => ipcRenderer.removeListener('opencode:sessionError', listener);
+  },
 });

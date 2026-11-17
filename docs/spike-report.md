@@ -434,6 +434,34 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.23.0 — 가시 컴포저 입력 + CDP 0.9.1 + 새 채팅 버튼 + 세션 오류 즉시 반영 (2026-11-17)
+
+**문제 확인 (live DOM 진단)**
+
+- chatgpt.com의 컴포저 셀렉터는 매치가 2개 — **비가시(rect 0×0) ProseMirror가 첫 매치**, 보이는 컴포저는 두 번째.
+- bridge는 항상 첫 매치(비가시)에 입력 → execCommand/paste 모두 "성공" 반환하지만 보이는 컴포저는 비어 있고, 검증(querySelector 첫 매치 기준)도 빈 것으로 판정 → 입력 실패.
+
+**수정**
+
+- `visible_composer_expr()` — rect>0 + visibility/display로 필터링해 **보이는 컴포저만** 반환. wait_for_composer/clear/probe/insert/verify 모두 동일 기준으로 교체.
+- 입력 전 `selectAll`+`delete`로 잔여 초안 제거.
+- chromiumoxide 0.7→0.9.1 (invalid messages를 skip하도록 내부 동작 개선), `chromiumoxide=off` EnvFilter로 WARN 스팸 완전 차단.
+- 삽입 후 검증도 보이는 컴포저 기준으로 판정.
+- 삽입 메카닉 canary 프로브로 execCommand(visible node) 동작 확인, paste 시뮬레이션도 synthetic dispatch로 소비 확인 (composer_debug.rs 예제 포함).
+
+**새 기능**
+
+- `/v1/chrome/newchat` + 타이틀바 버튼: ChatGPT 새 채팅으로 초기화 + thread counter 리셋.
+- main → renderer `/api/event` SSE 포워딩: `session.error`면 busy 즉시 해제 + 안내 노트 + Windows 토스트.
+
+**정리**
+
+- v0.22.0 중복 single-instance lock 제거 (원본 gotLock만 유지).
+
+**검증**
+
+- cargo 56/56 green, 프론트 빌드 OK, smoke 5/5, live probe OK.
+
 ## v0.22.0 — 단일 인스턴스 잠금 (2026-11-15)
 
 **문제 확인 (실측)**

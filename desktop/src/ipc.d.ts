@@ -88,6 +88,10 @@ declare global {
       switchProject(dir: string): Promise<{ ok: boolean; projectDir?: string; error?: string }>;
       removeRecentProject(dir: string): Promise<{ ok: boolean }>;
       exportSession(payload: { markdown: string; filename?: string }): Promise<{ ok: boolean; path?: string; cancelled?: boolean; error?: string }>;
+      newChat(): Promise<{ ok: boolean; action?: string; error?: string }>;
+      onSessionError(
+        callback: (payload: { sessionID?: string; message?: string }) => void,
+      ): () => void;
     };
   }
 }

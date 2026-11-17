@@ -59,26 +59,6 @@ let opencodeProc = null;
 let servePassword = '';
 let projectDir = '';
 let appQuitting = false;
-// 단일 인스턴스 보장 — 두 인스턴스가 뜨면 둘 다 브릿지(9224)·opencode(7891)를
-// spawn해 하나가 조용히 죽고, 살아남은 쪽 헬스체크가 죽은 쪽을 통과시켜 요청이 멈춘다.
-// (실측: v0.21.0 설치 직후 이중 실행으로 브릿지 2개가 동시에 뜨고 하나가 bind 실패로 죽음)
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
-if (gotSingleInstanceLock) {
-  app.on('second-instance', () => {
-    try {
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    } catch {
-      /* 창 포커스 실패 무시 */
-    }
-  });
-} else {
-  appendLog('boot', '[boot] another instance is running — quitting this one (no services spawned)\n');
-  app.whenReady().then(() => app.quit());
-}
 let updateState = 'idle'; // idle | checking | available | downloaded | up-to-date | error
 let updateVersion = null; // 사용 가능한 최신 버전 (예: "0.4.1")
 
@@ -350,6 +330,144 @@ async function spawnBridge(cwd) {
   return bridgeProc;
 }
 
+// ---------- opencode SSE 이벤트 버스 (/api/event) ----------
+// 서버 측 세션 오류(예: ModelUnavailableError)가 나면 메시지가 더 오지
+// 않아 busy가 영원히 남는다. 이벤트를 구독해 렌더러로 즉시 전달한다.
+let eventBusRetry = 0;
+
+function deepFindString(obj, depth = 0) {
+  if (!obj || depth > 4) return null;
+  if (typeof obj === 'string') {
+    const t = obj.trim();
+    return t || null;
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const s = deepFindString(item, depth + 1);
+      if (s) return s;
+    }
+    return null;
+  }
+  if (typeof obj !== 'object') return null;
+  for (const key of ['message', 'error', 'cause', 'reason', 'content', 'detail', 'data']) {
+    const s = deepFindString(obj[key], depth + 1);
+    if (s) return s;
+  }
+  return null;
+}
+
+function deepFindKey(obj, keyNames, depth = 0) {
+  if (!obj || depth > 4) return undefined;
+  if (typeof obj !== 'object') return undefined;
+  for (const key of Object.keys(obj)) {
+    const v = obj[key];
+    if (keyNames.includes(key) && (typeof v === 'string' || typeof v === 'number')) {
+      return String(v);
+    }
+  }
+  for (const key of Object.keys(obj)) {
+    const v = deepFindKey(obj[key], keyNames, depth + 1);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+function handleOpencodeEventFrame(frame) {
+  const lines = frame.split(/\r?\n/);
+  let eventName = '';
+  const dataLines = [];
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+    else if (line.startsWith('event:')) eventName = line.slice(6).trim();
+  }
+  if (!dataLines.length) return;
+  let evt;
+  try {
+    evt = JSON.parse(dataLines.join('\n'));
+  } catch {
+    return; // 잘못된 프레임은 무시 (앱 동작에 영향 없음)
+  }
+  const type = (evt && (evt.type || evt.event)) || eventName;
+  if (type !== 'session.error') return;
+  const payload = (evt && (evt.properties || evt.data || evt.payload)) || {};
+  const message = deepFindString(payload) ?? deepFindString(evt) ?? '세션 오류';
+  const sessionID = deepFindKey(evt, ['sessionID', 'sessionId', 'session_id', 'session']);
+  appendLog(
+    'opencode',
+    `[opencode] session.error sessionID=${sessionID || '?'} message=${String(message).slice(0, 300)}\n`,
+  );
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('opencode:sessionError', {
+      sessionID,
+      message: String(message).slice(0, 300),
+    });
+  }
+}
+
+function subscribeOpencodeEvents() {
+  if (!servePassword) return; // opencode가 아직 spawn되지 않음
+  const req = http.request(
+    {
+      host: '127.0.0.1',
+      port: SERVE_PORT,
+      path: '/api/event',
+      method: 'GET',
+      timeout: 0, // 무한 스트림 — 타임아웃 없음
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`opencode:${servePassword}`).toString('base64'),
+        Accept: 'text/event-stream',
+      },
+    },
+    (res) => {
+      appendLog('opencode', `[opencode] /api/event subscribed status=${res.statusCode}\n`);
+      if (res.statusCode !== 200) {
+        res.resume();
+        if (res.statusCode >= 400 && res.statusCode < 500) {
+          appendLog(
+            'opencode',
+            '[opencode] /api/event 인증/경로 오류 — 구독 중단 (앱 동작에는 영향 없음, stall watchdog이 커버)\n',
+          );
+          return;
+        }
+        scheduleEventRetry();
+        return;
+      }
+      eventBusRetry = 0;
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        buf += chunk;
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          handleOpencodeEventFrame(frame);
+        }
+      });
+      res.on('end', () => {
+        appendLog('opencode', '[opencode] /api/event stream ended — resubscribing\n');
+        scheduleEventRetry();
+      });
+      res.on('error', (e) => {
+        appendLog('opencode', `[opencode] /api/event stream error: ${e && e.message ? e.message : e}\n`);
+        scheduleEventRetry();
+      });
+    },
+  );
+  req.on('error', (e) => {
+    appendLog('opencode', `[opencode] /api/event connect error: ${e && e.message ? e.message : e}\n`);
+    scheduleEventRetry();
+  });
+  req.end();
+}
+
+function scheduleEventRetry() {
+  const delay = Math.min(2000 * 2 ** eventBusRetry, 15000);
+  eventBusRetry += 1;
+  setTimeout(subscribeOpencodeEvents, delay);
+}
+
 async function spawnOpencode(cwd) {
   if (opencodeProc) {
     killChild(opencodeProc);
@@ -374,8 +492,23 @@ async function spawnOpencode(cwd) {
     appendLog('opencode', `[opencode] exited code=${code}\n`);
   });
   appendLog('opencode', `[opencode] spawn serve port=${SERVE_PORT} cwd=${cwd}\n`);
+  // opencode가 뜰 시간을 잠깐 주고 /api/event 구독을 시작한다
+  setTimeout(subscribeOpencodeEvents, 2000);
   return opencodeProc;
 }
+
+// ---------- app:newChat (ChatGPT 새 채팅 시작) ----------
+ipcMain.handle('app:newChat', async () => {
+  appendLog('chrome', '[chrome] app:newChat request\n');
+  try {
+    const r = await httpGetJson(BRIDGE_PORT, '/v1/chrome/newchat', 60000);
+    appendLog('chrome', `[chrome] newChat -> ${JSON.stringify(r.json || {})}\n`);
+    return r.json ?? { ok: false, error: '브릿지가 응답하지 않습니다.' };
+  } catch (e) {
+    appendLog('chrome', `[chrome] newChat failed: ${e && e.message ? e.message : e}\n`);
+    return { ok: false, error: '새 채팅을 여는 데 실패했습니다. 전용 Chrome과 로그인 상태를 확인해 주세요.' };
+  }
+});
 
 function httpGetRaw(port, pathname, timeoutMs = 2500) {
   return new Promise((resolve, reject) => {
@@ -1140,7 +1273,6 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    if (!gotSingleInstanceLock) return; // 이중 인스턴스 — 아무것도 spawn하지 않는다
     try {
       appendLog('boot', '[boot] whenReady: start\n');
       ensureDir(DATA_DIR);
@@ -1167,7 +1299,6 @@ if (!gotLock) {
   });
 
   app.on('before-quit', () => {
-    if (!gotSingleInstanceLock) return; // 이중 인스턴스 — 첫 인스턴스의 Chrome/브릿지를 죽이지 않는다
     appQuitting = true;
     killChild(bridgeProc);
     killChild(opencodeProc);

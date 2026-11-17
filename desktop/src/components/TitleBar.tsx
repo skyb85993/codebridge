@@ -1,13 +1,14 @@
-import { Minus, Square, X, Settings } from 'lucide-react';
+import { Minus, Square, X, Settings, SquarePen } from 'lucide-react';
 import icon from '../../build/icon.png';
 
 interface TitleBarProps {
   version: string;
   title: string;
   onOpenSettings?: () => void;
+  onNewChat?: () => void;
 }
 
-export default function TitleBar({ version, title, onOpenSettings }: TitleBarProps) {
+export default function TitleBar({ version, title, onOpenSettings, onNewChat }: TitleBarProps) {
   return (
     <header className="drag-region flex h-11 shrink-0 items-center justify-between border-b border-lineSoft bg-panel/80 pl-3 pr-1 backdrop-blur-xl">
       <div className="flex min-w-0 items-center gap-2.5">
@@ -23,6 +24,16 @@ export default function TitleBar({ version, title, onOpenSettings }: TitleBarPro
       </div>
 
       <div className="no-drag flex h-full items-stretch">
+        {onNewChat && (
+          <button
+            className="grid h-full w-11 place-items-center text-dim transition-colors hover:bg-panel2 hover:text-text"
+            aria-label="ChatGPT 새 채팅 시작"
+            title="ChatGPT 새 채팅 시작 — 누적된 대화 컨텍스트를 비웁니다"
+            onClick={onNewChat}
+          >
+            <SquarePen size={14} strokeWidth={2} />
+          </button>
+        )}
         {onOpenSettings && (
           <button
             className="grid h-full w-11 place-items-center text-dim transition-colors hover:bg-panel2 hover:text-text"

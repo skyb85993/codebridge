@@ -1,5 +1,31 @@
 # 릴리즈 노트
 
+## v0.23.0 (2026-11-17)
+
+**핵심 — ChatGPT에 글자가 안 들어가던 진짜 원인을 고쳤습니다**
+
+- chatgpt.com은 같은 셀렉터(`textarea#prompt-textarea, div#prompt-textarea, [contenteditable='true']`)에 **비가시 ProseMirror 노드를 먼저** 둡니다. bridge가 `querySelector` 첫 매치에 입력 → 화면에 보이는 컴포저는 언제나 비어 있었고 → "입력 실패" / "컴포저가 비어 있음" / 새 채팅 인수인계 실패의 원인이었습니다.
+- **보이는(visible) 컴포저만 대상으로 입력·검증·초기화**하도록 수정 (`getBoundingClientRect` + computed style로 비가시 노드 제외, 반대는 항상 버립니다).
+- 입력 전 컴포저 **잔여 초안을 지우고** 넣습니다 (이전 자동화 텍스트가 쌓여 섞이던 문제 방지).
+
+**WS 스팸 / CDP 안정성**
+
+- chromiumoxide **0.7 → 0.9.1** 업그레이드. 최신 Chrome의 CDP 프레임을 못 파싱해서 수초 만에 27MB 로그가 쌓이며, 연결이 죽어 요청이 180초 타임아웃까지 멈추던 근본 원인 해소 (연결 유지, 무효 메시지는 skip하도록 내부 동작).
+- `WS Invalid message` WARN 스팸 완전 차단 — `EnvFilter("info,chromiumoxide=off")` 적용 (우리 로그는 전부 유지, `RUST_LOG`로 재정의 가능).
+
+**새 기능**
+
+- **타이틀바 "ChatGPT 새 채팅 시작" 버튼** (펜 아이콘) — 한 번에 새 채팅으로 초기화 + 스레드 카운터 리셋. 84개 넘은 대화에서 바로 리셋 가능.
+- **bridge 실패 즉시 표시** — main 프로세스가 opencode의 `/api/event` SSE를 구독해 `session.error`(예: ModelUnavailableError) 발생 시 busy를 즉시 풀고 안내 노트 + Windows 알림 표시. 기존엔 4분 무응답 watchdog까지 기다려야 했음. (다른 세션 오류는 무시, 구독 실패 시엔 로그만 남고 stall watchdog이 커버)
+
+**정리**
+
+- v0.22.0에 중복으로 들어간 single-instance lock 코드 제거 (기존 gotLock 구조 하나로 동작 — 두 인스턴스가 뜨던 일은 이미 막혀 있었고, 같은 동작을 두 벌 두지 않습니다).
+
+**검증**
+- cargo 56/56 green, `npm run build:frontend` OK, `node scripts/smoke-check.mjs` 5/5 PASS, `node --check main.cjs` OK.
+- live probe: ChatGPT composer=true(visible), login OK.
+
 ## v0.22.0 (2026-11-15)
 
 **수정 — 이중 실행 방지 (single-instance lock)**
