@@ -17,6 +17,15 @@ contextBridge.exposeInMainWorld('codebridge', {
   ocFetch(path, init) {
     return ipcRenderer.invoke('oc:fetch', path, init);
   },
+  orchestrationStart(args) {
+    return ipcRenderer.invoke('orchestration:start', args);
+  },
+  orchestrationGet(id) {
+    return ipcRenderer.invoke('orchestration:get', id);
+  },
+  orchestrationCancel(id) {
+    return ipcRenderer.invoke('orchestration:cancel', id);
+  },
   showChrome() {
     return ipcRenderer.invoke('app:showChrome');
   },
