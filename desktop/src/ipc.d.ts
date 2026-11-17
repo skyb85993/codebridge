@@ -64,6 +64,9 @@ export type HostSettingsPatch = Partial<
 declare global {
   interface Window {
     codebridge: {
+      orchestrationStart(args: { mode: 'review' | 'parallel' | 'debate'; directory: string; prompt: string; primary: 'webchat-chatgpt' | 'webchat-gemini'; secondary: 'webchat-chatgpt' | 'webchat-gemini'; tasks?: string[] }): Promise<{ id?: string; error?: string }>;
+      orchestrationGet(id: string): Promise<{ id: string; status: string; error: string | null; result: Record<string, unknown> | null; events: Array<{ time: number; label: string; status: string; model: string | null }>; sessions: string[] } | null>;
+      orchestrationCancel(id: string): Promise<boolean>;
       getBoot(): Promise<HostBoot>;
       probe(): Promise<HostProbe>;
       pickProject(): Promise<string | null>;
