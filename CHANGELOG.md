@@ -1,5 +1,13 @@
 # 릴리즈 노트
 
+## v0.31.0 (2026-11-18)
+
+**smoke-check를 2단계 구조로 재구성해 CI 게이트가 실제 opencode Web UI 경로까지 검증**
+
+- Phase A(기존): 빈 프로필 → 폴더 선택 온보딩 화면 렌더링 + window.codebridge IPC 검증
+- Phase B(신규): projectDir=ROOT를 시드한 프로필에서 브릿지/opencode 헬스 OK → 창이 http://127.0.0.1:7891/ (title=OpenCode)로 전환되는지 검증 → Web UI 경로의 회귀를 CI에서 잡는다
+- 검증: cargo test --release 56/56, npm run build:frontend OK, smoke-check 9/9 PASS
+
 ## v0.30.0 (2026-11-18)
 
 **Electron 창이 opencode serve의 공식 Web UI를 그대로 로드하도록 전환**

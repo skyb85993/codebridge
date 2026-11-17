@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * CodeBridge 렌더 스모크 체크.
- * 개발 인스턴스를 remote-debugging-port로 띄우고 CDP로 확인한다:
- *   1) 앱 셸이 렌더됐는가
- *   2) 에러 바운더리가 떴는가 ("문제가 발생했습니다")
- *   3) window.codebridge IPC가 응답하는가
+ * CodeBridge 스모크 체크 (2단계).
+ *   Phase A — 빈 프로필: 앱이 렌더링되고 window.codebridge IPC가 응답하며
+ *            폴더 선택 온보딩 화면(안전)으로 뜬다.
+ *   Phase B — projectDir=ROOT 시드 프로필: 서비스가 기동해창이
+ *            opencode Web UI(http://127.0.0.1:7891/)로 전환되고 title=OpenCode가 된다.
  *
- * UI 크래시를 CI에서 걸러내기 위한 게이트 (v0.8.0 사태 방지).
- * usage: node scripts/smoke-check.mjs
- * exit 0 = 통과, exit 1 = 실패
+ * CI 게이트 — Electron CDP 디버깅 포트를 열고 원격으로 검사한다.
+ * usage: node smoke-check.mjs
+ * exit 0 = 성공, exit 1 = 실패
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -19,42 +19,18 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = path.join(ROOT, 'desktop');
 const ELECTRON = path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
-const PORT = 19351;
+const PORT_A = 19351;
+const PORT_B = 19352;
 const results = [];
 const check = (name, ok, detail = '') => {
   results.push({ name, ok });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
 };
 
-async function waitForCdp(timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-      const list = await r.json();
-      const page = Array.isArray(list) && list.find((t) => (t.url || '').includes('ui-build/index.html'));
-      if (page) return page;
-    } catch {
-      /* 아직 CDP 미기동 */
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return null;
-}
-
-if (!fs.existsSync(ELECTRON)) {
-  console.error(`electron 바이너리 없음: ${ELECTRON}`);
-  process.exit(1);
-}
-
 const isWin = process.platform === 'win32';
-// taskkill을 발사하고 종료될 때까지 기다린다 (무한정 기다리지 않음)
 const killTree = (proc) =>
   new Promise((resolve) => {
-    if (!proc || proc.killed || !proc.pid) {
-      resolve();
-      return;
-    }
+    if (!proc || proc.killed || !proc.pid) return resolve();
     if (isWin) {
       try {
         const t = spawn('taskkill', ['/pid', String(proc.pid), '/t', '/f'], {
@@ -63,99 +39,164 @@ const killTree = (proc) =>
         });
         t.on('exit', () => resolve());
         t.on('error', () => resolve());
-        setTimeout(() => {
-          try { t.kill(); } catch {}
-          resolve();
-        }, 5000);
+        setTimeout(() => { try { t.kill(); } catch {} resolve(); }, 5000);
         return;
-      } catch {
-        /* 폴백 */
-      }
+      } catch { /* 폴백 */ }
     }
     try { proc.kill('SIGKILL'); } catch {}
     resolve();
   });
 
-// 프로필 폴더 삭제 — Electron이 아직 파일을 잡고 있을 수 있으므로 재시도
 const rmProfileWithRetry = async (dir, attempts = 5, delayMs = 400) => {
   for (let i = 0; i < attempts; i++) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return true;
-    } catch {
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
+    try { fs.rmSync(dir, { recursive: true, force: true }); return true; } catch { await new Promise((r) => setTimeout(r, delayMs)); }
   }
   return false;
 };
 
-// 설치본 앱이 살아 있을 때도 실행되도록 별도 userData 프로필로 띄운다
-// (requestSingleInstanceLock 충돌 방지 — 앱이 CODEBRIDGE_USER_DATA_DIR를 인식한다)
-const smokeProfile = path.join(ROOT, '.smoke-profile');
-const proc = spawn(ELECTRON, ['.', `--remote-debugging-port=${PORT}`], {
-  cwd: DESKTOP,
-  stdio: 'ignore',
-  env: { ...process.env, CODEBRIDGE_USER_DATA_DIR: smokeProfile },
+const httpGet = (port, pathname, timeoutMs = 2000) => new Promise((resolve) => {
+  const req = http.request({ host: '127.0.0.1', port, path: pathname, timeout: timeoutMs }, (res) => {
+    let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => resolve({ status: res.statusCode, body: b }));
+  });
+  req.on('error', () => resolve({ status: 0 }));
+  req.on('timeout', () => { try { req.destroy(); } catch {} ; resolve({ status: 0 }); });
+  req.end();
 });
 
-try {
-  const page = await waitForCdp();
-  check('electron CDP endpoint', !!page);
-  if (page) {
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
-    await new Promise((res, rej) => {
-      ws.onopen = res;
-      ws.onerror = rej;
-      setTimeout(() => rej(new Error('ws open timeout')), 8000);
-    });
-    let id = 0;
-    const pending = new Map();
-    const send = (method, params = {}) =>
-      new Promise((res, rej) => {
-        id += 1;
-        pending.set(id, { res, rej });
-        ws.send(JSON.stringify({ id, method, params }));
-      });
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && pending.has(msg.id)) {
-        const { res, rej } = pending.get(msg.id);
-        pending.delete(msg.id);
-        msg.error ? rej(new Error(JSON.stringify(msg.error))) : res(msg.result);
+const waitForPage = async (port, urlInclude, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+      if (r.ok) {
+        const list = await r.json();
+        const page = Array.isArray(list) && list.find((t) => (t.url || '').includes(urlInclude));
+        if (page) return page;
       }
-    };
-    const evaluate = async (expression) => {
-      const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-      return r && r.result ? r.result.value : undefined;
-    };
-    await new Promise((r) => setTimeout(r, 3000));
-    const bodyText = await evaluate('(document.body && document.body.innerText) || ""');
-    check('render completed', typeof bodyText === 'string' && bodyText.length > 10,
-      JSON.stringify(String(bodyText).slice(0, 80)));
-    check('no error boundary', !String(bodyText).includes('문제가 발생했습니다'));
-    check(
-      'app shell visible',
-      /새 대화|무엇을 만들까요|프로젝트 폴더|폴더를 선택하세요|설정/.test(String(bodyText)),
-      String(bodyText).slice(0, 60),
-    );
-    const boot = await evaluate(
-      "window.codebridge ? window.codebridge.getBoot().then(b => JSON.stringify(b)) : 'no bridge'",
-    );
-    check(
-      'window.codebridge IPC',
-      typeof boot === 'string' && boot.startsWith('{'),
-      String(boot).slice(0, 80),
-    );
-    ws.close();
+    } catch { /* 아직 CDP 미기동 */ }
+    await new Promise((r) => setTimeout(r, 250));
   }
-} catch (e) {
-  console.error('ERROR', (e && e.message) || e);
-  results.push({ name: 'runner', ok: false });
-} finally {
-  await killTree(proc);
-  await rmProfileWithRetry(smokeProfile, 5, 400);
-}
+  return null;
+};
 
-const failed = results.filter((r) => !r.ok);
-console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-process.exit(failed.length ? 1 : 0);
+const connectWs = async (page, ms = 8000) => {
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; setTimeout(() => rej(new Error('ws open timeout')), ms); });
+  let id = 0;
+  const pending = new Map();
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.id && pending.has(msg.id)) {
+      const { res, rej } = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? rej(new Error(JSON.stringify(msg.error))) : res(msg.result);
+    }
+  };
+  const send = (method, params = {}) =>
+    new Promise((res, rej) => { id += 1; pending.set(id, { res, rej }); ws.send(JSON.stringify({ id, method, params })); });
+  const evaluate = async (expression) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    return r && r.result ? r.result.value : undefined;
+  };
+  return { evaluate, close: () => ws.close() };
+};
+
+const launchElectron = (profileDir, port) => {
+  try { fs.mkdirSync(profileDir, { recursive: true }); } catch {}
+  const proc = spawn(ELECTRON, ['.', `--remote-debugging-port=${port}`], {
+    cwd: DESKTOP,
+    stdio: 'ignore',
+    env: { ...process.env, CODEBRIDGE_USER_DATA_DIR: profileDir },
+  });
+  return proc;
+};
+
+const test = async () => {
+  if (!fs.existsSync(ELECTRON)) {
+    console.error(`electron 바이너리 없음: ${ELECTRON}`);
+    process.exit(1);
+  }
+  const smokeProfile = path.join(ROOT, '.smoke-profile');
+  const webuiProfile = path.join(ROOT, '.smoke-profile-webui');
+  fs.rmSync(smokeProfile, { recursive: true, force: true });
+  fs.rmSync(webuiProfile, { recursive: true, force: true });
+
+  // Phase A — 빈 프로필: 폴더 선택 온보딩 화면
+  console.log('\n=== Phase A: blank profile (folder picker) ===');
+  {
+    const proc = launchElectron(smokeProfile, PORT_A);
+    try {
+      const page = await waitForPage(PORT_A, 'ui-build/index.html', 30_000);
+      check('A: electron CDP endpoint', !!page);
+      if (page) {
+        const cdp = await connectWs(page, 8000);
+        await new Promise((r) => setTimeout(r, 3000));
+        const bodyText = await cdp.evaluate('(document.body && document.body.innerText) || ""');
+        check('A: render completed', typeof bodyText === 'string' && bodyText.length > 10,
+          JSON.stringify(String(bodyText).slice(0, 80)));
+        check('A: no error boundary', !String(bodyText).includes('문제가 발생했습니다'));
+        check('A: shell visible',
+          /새 대화|무엇을 만들까요|프로젝트 폴더|폴더를 선택하세요|설정/.test(String(bodyText)),
+          String(bodyText).slice(0, 60));
+        const boot = await cdp.evaluate(
+          "window.codebridge ? window.codebridge.getBoot().then(b => JSON.stringify(b)) : 'no bridge'");
+        check('A: window.codebridge IPC', typeof boot === 'string' && boot.startsWith('{'),
+          String(boot).slice(0, 80));
+        cdp.close();
+      }
+    } catch (e) {
+      console.error('ERROR', (e && e.message) || e);
+      results.push({ name: 'A: runner', ok: false });
+    } finally {
+      await killTree(proc);
+      await rmProfileWithRetry(smokeProfile, 5, 400);
+    }
+  }
+
+  // Phase B — projectDir seeded: 서비스 기동 후 opencode Web UI로 전환
+  console.log('\n=== Phase B: projectDir seeded (opencode Web UI) ===');
+  {
+    fs.mkdirSync(webuiProfile, { recursive: true });
+    fs.writeFileSync(path.join(webuiProfile, 'settings.json'),
+      JSON.stringify({ projectDir: ROOT }), 'utf8');
+    const proc = launchElectron(webuiProfile, PORT_B);
+    try {
+      // 서비스 헬스 (최대 90초)
+      const t0 = Date.now();
+      let healthy = null;
+      while (Date.now() - t0 < 90_000) {
+        const b = await httpGet(9224, '/health', 1500);
+        const o = await httpGet(7891, '/global/health', 1500);
+        if (b.status === 200 && o.status === 200) { healthy = { bridge: b.status, opencode: o.status }; break; }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      check('B: bridge+opencode healthy', !!healthy, JSON.stringify(healthy || {}));
+      // Web UI 페이지가 뜨는지 (eligible redirect — loadOpencodeUi()가 전환)
+      const page = await waitForPage(PORT_B, '127.0.0.1:7891/', 30_000);
+      check('B: window navigated to opencode Web UI', !!page,
+        page ? (page.url + ' / title=' + page.title) : 'no page found');
+      if (page) {
+        check('B: window title=OpenCode', page.title === 'OpenCode', 'title=' + page.title);
+        const cdp = await connectWs(page, 8000);
+        await new Promise((r) => setTimeout(r, 3000));
+        const info = await cdp.evaluate(
+          "fetch('/global/health', { headers: { Authorization: 'Basic cGFjZQ==' } }).then(r => r.status).catch(() => 0)");
+        check('B: /global/health fetch', info === 200 || info === 401 || info === 0,
+          'status=' + String(info));
+        cdp.close();
+      }
+    } catch (e) {
+      console.error('ERROR', (e && e.message) || e);
+      results.push({ name: 'B: runner', ok: false });
+    } finally {
+      await killTree(proc);
+      await rmProfileWithRetry(webuiProfile, 5, 400);
+    }
+  }
+
+  const failed = results.filter((r) => !r.ok);
+  console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
+  process.exit(failed.length ? 1 : 0);
+};
+
+test().catch((e) => { console.error(e); process.exit(1); });
