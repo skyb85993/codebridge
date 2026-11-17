@@ -36,6 +36,7 @@
     },
     "files": [
       "main.cjs",
+      "orchestration.cjs",
       "preload.cjs",
       "ui-build/**",
       "package.json"
