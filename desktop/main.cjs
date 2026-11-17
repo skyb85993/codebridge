@@ -51,6 +51,7 @@ const CHROME_PROFILE = path.join(DATA_DIR, 'chrome-profile');
 
 const SERVE_PORT = 7891;
 const BRIDGE_PORT = 9224;
+const OPENCODE_URL = `http://127.0.0.1:${SERVE_PORT}/`;
 
 let mainWindow = null;
 let tray = null;
@@ -619,6 +620,8 @@ async function startServices(dir) {
   await spawnOpencode(dir);
   const opencodeOk = await waitForOpencode(90000);
   appendLog('boot', `[boot] services bridgeOk=${bridgeOk} opencodeOk=${opencodeOk}\n`);
+  // opencode serve가 건강하면 Web UI로 전환 (opencode의 모든 기능이 그대로 보임)
+  if (opencodeOk) loadOpencodeUi();
   return bridgeOk && opencodeOk;
 }
 
@@ -773,7 +776,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     ...windowOpts,
     backgroundColor: '#0a0e14',
-    frame: false,
+    frame: true,
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -800,7 +803,33 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-  mainWindow.loadFile(path.join(UI_DIR, 'index.html'));
+  // 프로젝트 폴더가 이미 정해져 있으면 opencode serve의 내장 Web UI(127.0.0.1:7891)를
+  // 그대로 띄운다. 아직 폴더를 안 골랐으면 기존 React UI(폴더 선택)를 그대로 둔다.
+  if (projectDir) {
+    // 서비스가 뜨기 전엔 간단한 로딩 화면만 보여준다. 완전히 건강하면 loadOpencodeUi()로 교체.
+    mainWindow.loadURL(
+      'data:text/html;charset=utf-8,<html><head><title>CodeBridge</title></head><body style="background:%230a0e14;color:%23e0def4;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><p>서비스 시작 중…</p></body></html>',
+    );
+  } else {
+    mainWindow.loadFile(path.join(UI_DIR, 'index.html'));
+  }
+}
+
+// opencode serve가 건강해지면 Web UI로 전환한다.
+// Basic Auth는 opencode serve가 OPENCODE_SERVER_PASSWORD로 요구한다 —
+// 모든 요청(127.0.0.1:7891 로컬 요청에만) 헤더를 주입한다.
+function loadOpencodeUi() {
+  if (!mainWindow) return;
+  const ses = mainWindow.webContents.session;
+  if (!ses.__codebridgeAuth) {
+    ses.__codebridgeAuth = true;
+    ses.webRequest.onBeforeSendHeaders({ urls: [`${OPENCODE_URL}*`] }, (details, callback) => {
+      details.requestHeaders['Authorization'] =
+        'Basic ' + Buffer.from(`opencode:${servePassword}`).toString('base64');
+      callback({ requestHeaders: details.requestHeaders });
+    });
+  }
+  mainWindow.loadURL(OPENCODE_URL);
 }
 
 // 전용 Chrome의 프로세스 id를 기억해 둔다 (%APPDATA%CodeBridge\dedicated-chrome.pid).

@@ -1,5 +1,8 @@
-# CodeBridge Desktop 번들 브릿지 설정 (프로젝트의 config.toml보다 우선)
-# mode: browser = 전용 Chrome(CDP 9333)으로 실제 ChatGPT 자동화 / mock = 고정 응답 스파이크
+# CodeBridge bridge 설정
+# [automation] mode:
+#   "browser"  = 전용 Chrome(CDP 9333)으로 실제 ChatGPT/Gemini 자동화 (전용 프로필에 로그인 1회 필요)
+#   mock 경로는 제거됨 (2026-11-11)
+
 [server]
 host = "127.0.0.1"
 port = 9224
@@ -11,3 +14,4 @@ cdp_port = 9333
 [handover]
 mode = "auto"
 thread_soft_limit = 25
+order = ["same_site_new_chat", "gemini"]

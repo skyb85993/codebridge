@@ -1,5 +1,21 @@
 # 릴리즈 노트
 
+## v0.30.0 (2026-11-18)
+
+**Electron 창이 opencode serve의 공식 Web UI를 그대로 로드하도록 전환**
+
+배경: opencode serve /에 자체 SolidJS Web UI가 이미 내장되어 있고 /api/* 118 라우트(agent build/plan, fork, revert, compact, todos, permissions, PTY, skills, todos, question cards, VCS, credentials, generate, websearch)가 전부 구현돼 있어서, CodeBridge가 극히 일부만 React로 재구현하던 것을 접고 **opencode의 모든 기능을 제공하도록** 창을 serve가 서빙하는 Web UI 자체로 전환.
+
+변경 내용:
+- 창을 http://127.0.0.1:7891/ 로 로드 (opencode serve 기본값, 127.0.0.1:9224→ChatGPT/Gemini 무료 웹챗)
+- session.webRequest.onBeforeSendHeaders로 Authorization Basic opencode:<servePassword> 주입
+- 첫 실행(projectDir 미선택)에는 기존 폴더 선택 화면(React index.html)을 유지 → 폴더 선택 시 startServices → opencode Web UI로 전환
+- frame: true로 전환(자체 Web UI에 자체적인 창 컨트롤이 없으므로 네이티브 버튼 제공)
+
+**검증**
+- cargo test --release 56/56, npm run build:frontend OK, smoke-check 5/5 PASS
+- isolated 프로필(projectDir=클론 루트)로 실행: bridge health 200, opencode health 200, CDP target url=http://127.0.0.1:7891/, document.title=OpenCode
+
 ## v0.29.0 (2026-11-18)
 
 **Gemini 전송이 안 되던 문제 수정 + 코드 리뷰 수정분 반영**
