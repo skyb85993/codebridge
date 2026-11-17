@@ -13,6 +13,18 @@ const FENCE_HEADER: &str = include_str!("../../../prompts/fence_convention.md");
 const DEFAULT_BUDGET_CHARS: usize = 32_000;
 const MAX_SNAPSHOT_FILES: usize = 80;
 const MAX_FILE_DEPTH: usize = 3;
+/// 직접 업로드할 파일 크기 상한 (ChatGPT 무료 첨부 제한을 고려)
+pub const MAX_ATTACH_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// 한 번에 첨부할 최대 파일 수
+pub const MAX_ATTACH_FILES: usize = 10;
+
+/// flatten 결과 — 프롬프트 본문 + 직접 업로드할 파일(절대 경로).
+/// read 도구로 읽은 파일이 업로드 대상이면 그 내용은 본문에서 빠지고
+/// `(파일 첨부됨: <경로>)`로 대체된다 (flatten의 inline=false 경로).
+pub struct FlattenResult {
+    pub prompt: String,
+    pub attach: Vec<PathBuf>,
+}
 
 /// 워크스페이스 파일 스냅샷 (경로+크기). 바이너리/빌드 산출물 제외.
 pub fn snapshot(root: &Path) -> String {
@@ -86,16 +98,84 @@ fn msg_text(m: &ChatMessage) -> String {
     }
 }
 
-/// messages → 단일 프롬프트.
+/// opencode read 도구 호출의 path 인자를 못 읽으면 None.
+/// opencode read 스키마는 {"path": "..."} (예전 버전은 filePath/file 도 사용).
+fn read_tool_path_arg(tc: &Value) -> Option<String> {
+    let obj = tc.get("function")?.get("arguments")?.as_str()?;
+    let args: Value = serde_json::from_str(obj).ok()?;
+    let o = args.as_object()?;
+    o.get("path")
+        .or_else(|| o.get("filePath"))
+        .or_else(|| o.get("file"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// 절대 경로로 만들고 업로드 가능한지(파일 존재·파일·크기 상한) 검사.
+/// 불가하면 None — 그 경우 호출자는 인라인 폴백을 쓴다.
+fn attachable_path(raw: &str, workspace_root: &Path) -> Option<PathBuf> {
+    let p = Path::new(raw);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workspace_root.join(p)
+    };
+    // canonicalize로 .. traversal 방지
+    let canon = std::fs::canonicalize(&abs).ok()?;
+    let meta = std::fs::metadata(&canon).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    if meta.len() > MAX_ATTACH_FILE_BYTES {
+        return None;
+    }
+    Some(canon)
+}
+
+fn flatten_for_tool(body: &str) -> String {
+    let t = body.trim();
+    if t.chars().count() > 6_000 {
+        let mut s: String = t.chars().take(6_000).collect();
+        s.push_str("\n…(생략)\n");
+        s
+    } else {
+        t.to_string()
+    }
+}
+
+/// messages → 단일 프롬프트 + 인라인 업로드 대상.
 /// 우선순위: 규약 > 최근 user > 도구 결과 > 스냅샷 — 현재 요청은 절대 자르지 않는다.
 /// 규약+현재 요청 자체가 예산을 넘으면 Err로 명시적으로 거부한다.
-pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usize>) -> Result<String, String> {
+/// attach_reads = true면 read 도구로 읽은 파일을 직접 업로드하도록 대상만 모으고,
+/// 그 자리에는 `(파일 첨부됨: <경로>)`로 대체한다. false면 인라인(기존 동작).
+pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usize>) -> Result<FlattenResult, String> {
+    build_with(req, workspace_root, budget_chars, true)
+}
+
+/// attach_reads=false 폴백 — 업로드가 실패했을 때 내용을 인라인으로 넘긴다.
+pub fn build_inline(
+    req: &ChatRequest,
+    workspace_root: &Path,
+    budget_chars: Option<usize>,
+) -> Result<FlattenResult, String> {
+    build_with(req, workspace_root, budget_chars, false)
+}
+
+fn build_with(
+    req: &ChatRequest,
+    workspace_root: &Path,
+    budget_chars: Option<usize>,
+    attach_reads: bool,
+) -> Result<FlattenResult, String> {
     let budget = budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS);
     let header = format!("{}\n", FENCE_HEADER.trim());
 
     // 새 구조: 헤더(규약) → 대화 기록(user/assistant/tool) → 워크스페이스 → 마지막 지시
     // 모델이 직전에 어떤 도구를 호출했는지, 결과가 뭐였는지 인지한 채로 다음 행동을 고르게 한다.
     let mut convo = String::new();
+    // assistant의 read 호출 순서에 맞춰, tool 메시지를 그 순서대로 대응시킨다
+    let mut pending_tools: std::collections::VecDeque<Option<PathBuf>> = std::collections::VecDeque::new();
+    let mut attach: Vec<PathBuf> = Vec::new();
     for m in &req.messages {
         match m.role.as_str() {
             "user" => {
@@ -121,6 +201,15 @@ pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usiz
                                 convo.push_str(&call_line);
                                 convo.push('\n');
                             }
+                            if attach_reads {
+                                pending_tools.push_back(read_tool_path_arg(tc).and_then(|raw| {
+                                    (attach.len() + pending_tools.len() < MAX_ATTACH_FILES)
+                                        .then(|| attachable_path(&raw, workspace_root))
+                                        .flatten()
+                                }));
+                            } else {
+                                pending_tools.push_back(None);
+                            }
                         }
                     }
                 }
@@ -128,15 +217,24 @@ pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usiz
             "tool" => {
                 let txt = msg_text(m);
                 let t = txt.trim();
-                convo.push_str("도구:\n");
-                if t.chars().count() > 6_000 {
-                    let mut s: String = t.chars().take(6_000).collect();
-                    s.push_str("\n…(생략)\n");
-                    convo.push_str(&s);
+                let read_path = pending_tools.pop_front().flatten();
+                if read_path.is_some() && attach_reads {
+                    // 직접 업로드 — 본문에서 내용을 빼고 첨부로 넘긴다
+                    let p = read_path.unwrap_or_default();
+                    if attach.len() < MAX_ATTACH_FILES {
+                        attach.push(p.clone());
+                        convo.push_str("도구: (아래 파일로 첨부됨)\n");
+                        convo.push_str(&format!("- {}\n", p.display()));
+                    } else {
+                        convo.push_str("도구:\n");
+                        convo.push_str(&flatten_for_tool(t));
+                        convo.push('\n');
+                    }
                 } else {
-                    convo.push_str(t);
+                    convo.push_str("도구:\n");
+                    convo.push_str(&flatten_for_tool(t));
+                    convo.push('\n');
                 }
-                convo.push('\n');
             }
             _ => {}
         }
@@ -153,12 +251,19 @@ pub fn build(req: &ChatRequest, workspace_root: &Path, budget_chars: Option<usiz
     prompt.push_str(convo.trim_end());
     prompt.push_str("\n\n[현재 워크스페이스 파일]\n");
     prompt.push_str(snapshot.trim_end());
-    prompt.push_str("\n\n## 당신의 차례입니다\n위 대화를 이어받아 TOOL 한 줄만 출력하세요. 설명 없이, 인사 없이.\n");
+    prompt.push_str(
+        "\n\n## 당신의 차례입니다\n\
+위 대화의 **가장 마지막 사용자 요청**을 처리하세요.\n\
+- 아직 실행하지 않았다면 TOOL 한 줄을 출력하세요 (설명 없이).\n\
+- 이미 실행하고 결과를 확인했다면, 그 결과로 짧게 끝맺으면 됩니다.\n\
+- 이미 완료된 작업을 다시 하지는 마세요.\n\
+- 새 요청이 들어왔는데 '완료'라고만 답하지 마세요.\n",
+    );
 
     if let Ok(out) = std::env::var("BRIDGE_DEBUG_PROMPT") {
         let _ = std::fs::write(&out, &prompt);
     }
-    Ok(prompt)
+    Ok(FlattenResult { prompt, attach })
 }
 
 /// 도구 호출 JSON을 `TOOL name key=value ...` 한 줄로 다시 쓰는 헬퍼.
@@ -239,7 +344,8 @@ mod tests {
         let out_dir = dir.join("src");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
-        let prompt = build(&req, &dir, Some(20_000)).unwrap();
+        let flat = build(&req, &dir, Some(20_000)).unwrap();
+        let prompt = flat.prompt;
         assert!(prompt.contains("중요한 작업"));
         assert!(prompt.contains("에이전트"));
         assert!(prompt.contains("main.rs"));
@@ -276,12 +382,12 @@ mod tests {
         let out_dir = dir.join("src");
         std::fs::create_dir_all(&out_dir).unwrap();
         std::fs::write(out_dir.join("main.rs"), b"fn main() {}").unwrap();
-        let prompt = build(&req, &dir, Some(20_000)).unwrap();
+        let flat = build(&req, &dir, Some(20_000)).unwrap();
+        let prompt = flat.prompt;
         assert!(prompt.contains("에이전트"));
         assert!(prompt.contains("## 대화 기록"));
         assert!(prompt.contains("사용자:"));
         assert!(prompt.contains("TOOL read path=src/main.rs"));
-        assert!(prompt.contains("도구:"));
         assert!(prompt.contains("당신의 차례입니다"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -303,7 +409,8 @@ mod tests {
             stream: false,
             tools: None,
         };
-        let prompt = build(&req, std::path::Path::new("."), Some(20_000)).unwrap();
+        let flat = build(&req, std::path::Path::new("."), Some(20_000)).unwrap();
+        let prompt = flat.prompt;
         assert!(prompt.contains("첫 줄"));
         assert!(prompt.contains("둘째 줄"));
     }

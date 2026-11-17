@@ -434,6 +434,31 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.25.0 — 파일 직접 첨부 + 버블 넘침 + "완료" 반복 수정 (2026-11-17)
+
+**파일 직접 첨부 (read 결과)**
+
+- `flatten.rs`에 `FlattenResult` 도입: prompt + attach(Vec<PathBuf>) 반환
+- assistant의 `read` 호출에서 path를 뽑아 순서대로 tool 결과와 대응 (`read_tool_path_arg`)
+- 업로드 가능 여부 검사: file 존재 + is_file + 32MB 이하 + 최대 10개 (`attachable_path`)
+- 업로드 대상이면 flatten 본문에서 내용 제외 → `(아래 파일로 첨부됨)` placeholder로 대체
+- engine에 `attach_files()` 추가: `DOM.setFileInputFiles`로 hidden file input에 파일 주입
+  - `input[type=file]` 우선, 없으면 "첨부/파일/업로드" 버튼 클릭 후 재시도
+  - `input.files.length` 확인하여 실제 설정 여부 감지
+- api.rs: attach 목록이 있으면 flatten 먼저 빌드 → `Engine::attach_files`로 직접 업로드 → 실패 시 `build_inline` 폴백으로 같은 요청을 인라인으로 전송 (유실 없음)
+
+**버블 넘침**
+
+- `.bubble-assistant`/`.bubble-user` overflow-wrap, word-break 적용 + table/blockquote도 동일 처리
+
+**"완료"만 답하는 문제**
+
+- flatten tail: "위 대화의 **가장 마지막 사용자 요청**을 처리하세요"로 변경, 새 요청을 무시하고 끝낸 문장만 반복하지 않도록 명시
+
+**검증**
+
+- cargo 56/56 green, 프론트 빌드 OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
 ## v0.24.0 — 질문 카드 답장에도 "처리 중" 표시 (2026-11-17)
 
 **문제 확인**

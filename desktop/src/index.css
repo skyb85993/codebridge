@@ -77,10 +77,24 @@ body,
 .bubble-user {
   background: linear-gradient(135deg, #1b2b3f 0%, #1a2b2a 100%);
   border: 1px solid rgba(88, 214, 255, 0.22);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .bubble-assistant {
   background: rgba(22, 27, 38, 0.85);
   border: 1px solid rgba(58, 70, 96, 0.45);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* 긴 URL·파일 경로·표가 말풍선을 뚫고 나가지 않게 */
+.bubble-assistant :where(table, blockquote, p, li, a, h1, h2, h3, h4, h5, h6, span, strong, em) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bubble-assistant :where(table) {
+  display: block;
+  overflow-x: auto;
 }
 
 /* ---------- 코드 블록 ---------- */

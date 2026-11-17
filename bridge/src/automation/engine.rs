@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use chromiumoxide::browser::Browser;
 use chromiumoxide::page::Page;
+use chromiumoxide_cdp::cdp::browser_protocol::dom::SetFileInputFilesParams;
 use futures::StreamExt;
 use serde_json::Value;
 
@@ -473,6 +474,97 @@ impl Engine {
         }
         let lower = text.to_lowercase();
         LIMIT_TEXTS.iter().any(|t| lower.contains(t))
+    }
+
+    /// 파일을 ChatGPT/Gemini 컴포저에 직접 업로드한다.
+    /// hidden input[type=file]에 CDP `DOM.setFileInputFiles`로 파일을 주입하는 방식 —
+    /// 내용을 본문에 붙이는 것보다 정밀하고, 이미지/PDF도 그대로 보낼 수 있다.
+    /// 반환값은 input.files.length (설정된 파일 수).
+    pub async fn attach_files(&self, paths: &[String], site: Site) -> Result<usize, EngineError> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        if !http_ok(self.cdp_port, "/json/version").await {
+            return Err(EngineError::Connect(
+                "Chrome CDP 응답 없음 — 전용 Chrome이 실행 중인지 확인하세요".into(),
+            ));
+        }
+        let browser = self.spawn_handler().await?;
+        let page = self
+            .find_tab(&browser, site, true)
+            .await?
+            .ok_or_else(|| EngineError::Page("탭을 찾거나 열지 못했습니다".into()))?;
+        if !self.wait_for_composer(&page, site, 20_000).await? {
+            return Err(EngineError::Page(
+                "컴포저를 찾지 못했습니다 (로그인 상태를 확인하세요)".into(),
+            ));
+        }
+
+        // 파일 input이 있으면 바로 사용, 없으면 "첨부" 버튼을 눌러 동적으로 만들어 본다.
+        let input_ready = page
+            .evaluate("document.querySelector('input[type=file]')")
+            .await
+            .ok()
+            .map(|r| r.object().object_id.is_some())
+            .unwrap_or(false);
+        if !input_ready {
+            let clicked = eval_str(
+                &page,
+                r#"(() => {
+                    const btns = [...document.querySelectorAll('button')];
+                    const target = btns.find(b => {
+                        const al = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).trim();
+                        return /attach|첨부|업로드|upload|파일|file/i.test(al);
+                    });
+                    if (target) { target.click(); return 'clicked'; }
+                    // 버튼을 못 찾으면 마지막 수단으로 '+' 아이콘 버튼 클릭 시도
+                    const plus = btns.find(b => (b.textContent || '').trim() === '+');
+                    if (plus) { plus.click(); return 'clicked-plus'; }
+                    return 'missing';
+                })()"#,
+            )
+            .await?;
+            if clicked == "missing" {
+                return Err(EngineError::Page(
+                    "파일 업로드 버튼(또는 input[type=file])을 찾지 못했습니다".into(),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+        }
+
+        // input[type=file]의 JS objectId를 받아 CDP로 파일을 주입
+        let res = page
+            .evaluate("document.querySelector('input[type=file]')")
+            .await
+            .map_err(|e| EngineError::Page(e.to_string()))?;
+        let object_id = res
+            .object()
+            .object_id
+            .clone()
+            .ok_or_else(|| EngineError::Page("파일 입력 input을 찾지 못했습니다".into()))?;
+
+        let mut params = SetFileInputFilesParams::new(paths.to_vec());
+        params.object_id = Some(object_id);
+        page.execute(params).await.map_err(|e| {
+            EngineError::Page(format!("DOM.setFileInputFiles 실패: {e}"))
+        })?;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        // 실제로 파일이 들어갔는지 확인
+        let after = eval_str(
+            &page,
+            "String(document.querySelector('input[type=file]')?.files?.length ?? -1)",
+        )
+        .await
+        .unwrap_or_else(|_| "-1".to_string());
+        println!("[browser] 파일 직접 첨부 요청 {:?} -> input.files.length={}", paths, after);
+        let n: i64 = after.parse().unwrap_or(0);
+        if n <= 0 {
+            return Err(EngineError::Page(format!(
+                "파일이 input에 설정되지 않았습니다 (files.length={after})"
+            )));
+        }
+        Ok(n as usize)
     }
 
     /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용).

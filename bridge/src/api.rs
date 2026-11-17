@@ -518,12 +518,47 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         return ack;
     }
 
-    let prompt = match harness::flatten::build(req, &workspace, None) {
+    // read 도구로 읽은 파일이 있으면 내용을 본문에 붙여넣는 대신 ChatGPT에 직접 첨부한다.
+    // 업로드에 실패하면 내용을 인라인으로 넘겨 유실을 막는다 (build_inline 폴백).
+    let flat = match harness::flatten::build(req, &workspace, None) {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, e).into_response();
         }
     };
+    let mut prompt = flat.prompt;
+    let mut attach = flat.attach;
+    let mut attach_ok = true;
+    if !attach.is_empty() {
+        let engine0 = automation::engine::Engine::new(app.cfg.automation.cdp_port);
+        let paths: Vec<String> = attach
+            .iter()
+            .map(|p| {
+                let s = p.to_string_lossy().to_string();
+                // canonicalize의 \\?\ 접두어는 CDP file input이 거부할 수 있어 제거
+                s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
+            })
+            .collect();
+        // 전용 Chrome이 떠 있지 않으면 여기서 띄운다 (업로드는 visible composer에 첨부된다)
+        match engine0.attach_files(&paths, automation::engine::Site::from_model(&req.model)).await {
+            Ok(n) => {
+                println!("[browser] 파일 직접 첨부 {}개 완료: {:?}", n, paths);
+            }
+            Err(e) => {
+                println!("[browser] 파일 직접 첨부 실패 ({e}) — 내용을 인라인으로 넘깁니다");
+                attach_ok = false;
+            }
+        }
+    }
+    if !attach_ok {
+        // 업로드 실패: 인라인 프롬프트로 재생성해서 진행 (작업 유실 방지)
+        let flat_inline = match harness::flatten::build_inline(req, &workspace, None) {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        };
+        prompt = flat_inline.prompt;
+        attach = Vec::new();
+    }
     println!(
         "[browser] cwd={} prompt_chars={} msg_count={}",
         workspace_s,
