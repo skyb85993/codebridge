@@ -434,6 +434,21 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.24.0 — 질문 카드 답장에도 "처리 중" 표시 (2026-11-17)
+
+**문제 확인**
+
+- 질문 카드에 답을 보내면 내부적으로는 `busy=true`가 되지만, `isLastAssistantDone`이 "마지막 assistant가 종료성 finish(stop 등)"만 봐서 질문을 한 이전 메시지 기준으로 "이미 끝남"으로 판정 → 스피너 숨김.
+
+**수정**
+
+- 마지막 assistant 뒤에 `user` 메시지가 하나라도 있으면 종료성 finish 여부와 무관하게 "응답 대기(처리 중)"로 판정.
+- 새 대화뿐 아니라 모든 후속 메시지에서도 전송 즉시 처리 중 표시.
+
+**검증**
+
+- `npm run build:frontend` OK, `node scripts/smoke-check.mjs` 5/5 PASS.
+
 ## v0.23.0 — 가시 컴포저 입력 + CDP 0.9.1 + 새 채팅 버튼 + 세션 오류 즉시 반영 (2026-11-17)
 
 **문제 확인 (live DOM 진단)**

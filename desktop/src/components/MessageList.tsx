@@ -89,14 +89,27 @@ function PromptChip({ text }: { text: string }) {
 }
 
 function isLastAssistantDone(messages: ChatMessage[]): boolean {
-  const last = [...messages].reverse().find((m) => m.type === 'assistant');
-  if (!last) return false;
-  const msg = last as Extract<ChatMessage, { type: 'assistant' }>;
+  // 마지막 assistant가 종료성 finish를 갖고, 그 뒤에 user 메시지가 없을 때만 "끝난 상태"
+  // (질문 카드에 답한 직후: [..., assistant(stop), user] — user가 뒤를 이으면
+  //  아직 응답을 기다리는 중이므로 "처리 중"을 보여줘야 한다)
+  let lastAssistant: Extract<ChatMessage, { type: 'assistant' }> | null = null;
+  let lastAssistantIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === 'assistant') {
+      lastAssistant = messages[i] as Extract<ChatMessage, { type: 'assistant' }>;
+      lastAssistantIndex = i;
+      break;
+    }
+  }
+  if (!lastAssistant) return false;
+  for (let i = lastAssistantIndex + 1; i < messages.length; i++) {
+    if (messages[i].type === 'user') return false; // 답장 대기 — 처리 중 표시
+  }
   // App.tsx와 동일: terminal finish만 완료로 본다 (tool-calls는 루프 중간)
   return (
-    msg.finish === 'stop' ||
-    msg.finish === 'length' ||
-    msg.finish === 'content-filter' ||
-    msg.finish === 'error'
+    lastAssistant.finish === 'stop' ||
+    lastAssistant.finish === 'length' ||
+    lastAssistant.finish === 'content-filter' ||
+    lastAssistant.finish === 'error'
   );
 }
