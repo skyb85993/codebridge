@@ -1238,6 +1238,27 @@ function ocFetchJson(pathname, init) {
   });
 }
 
+// Multi-model orchestration runs through existing OpenCode sessions and tools.
+const { createOrchestrator } = require('./orchestration.cjs');
+const orchestration = createOrchestrator(
+  ocFetchJson,
+  (id, event) => {
+    appendLog('orchestration', `[job ${id}] ${event.label} ${event.status}\n`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('orchestration:progress', { id, event });
+    }
+  },
+);
+ipcMain.handle('orchestration:start', (_e, args) => {
+  if (!projectDir || args?.directory !== projectDir) {
+    return { error: '현재 선택된 프로젝트 폴더가 아닙니다.' };
+  }
+  try { return orchestration.start(args); }
+  catch (e) { return { error: String(e.message || e) }; }
+});
+ipcMain.handle('orchestration:get', (_e, id) => orchestration.get(id));
+ipcMain.handle('orchestration:cancel', (_e, id) => orchestration.cancel(id));
+
 ipcMain.handle('oc:fetch', (_e, pathname, init) => ocFetchJson(pathname, init));
 
 ipcMain.handle('bridge:fetch', (_e, pathname, init) => httpGetJson(BRIDGE_PORT, pathname));
