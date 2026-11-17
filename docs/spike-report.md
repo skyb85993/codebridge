@@ -434,6 +434,24 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.27.0 — 계획 먼저 + 자동 진행 체크리스트 (2026-11-18)
+
+**동작**
+
+- 새 요청 감지 시 GPT가 `CODEBRIDGE_PLAN {"steps":[…]}` + 바로 첫 TOOL을 한 응답에 출력하도록 지시(fence convention + flatten tail 두 곳에 명시).
+- 계획이 이미 대화 기록에 있으면 재출력하지 않음 (중복 계획 방지).
+- MessageRow에서 계획 마커를 숨기고 `PlanCard`를 렌더 — 번호 목록 체크리스트 + 단계 수 표시.
+- bridge.log `plan=Nsteps` 로깅.
+
+**알려진 한계**
+
+- GPT가 지시문을 무시할 수 있음 — 마커가 안 나오면 계획 없이 그냥 진행됨(에러 아님).
+- 단계별 자동 체크 표시는 아직 없음 — 진행은 기존 TOOL 호출 목록으로 확인.
+
+**검증**
+
+- cargo 56/56 green, 프론트 빌드 OK, smoke 5/5 PASS.
+
 ## v0.26.0 — fence_convention 강화 + 첨부 nodeId 수정 (2026-11-17)
 
 **fence_convention.md 재작성**

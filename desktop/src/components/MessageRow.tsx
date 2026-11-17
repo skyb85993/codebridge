@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import type { ChatMessage } from '../api';
 import ToolCallChip from './ToolCallChip';
 import QuestionCard, { type QuestionMarker } from './QuestionCard';
+import PlanCard from './PlanCard';
 
 function PreWithCopy({ children }: { children?: React.ReactNode }) {
   const preRef = useRef<HTMLPreElement>(null);
@@ -42,6 +43,27 @@ function PreWithCopy({ children }: { children?: React.ReactNode }) {
 const MARKER_PREFIX = 'CODEBRIDGE_QUESTION:';
 const TOOL_FAILED_PREFIX = 'codebridge:tool-failed:';
 const TOOL_LINE_RE = /^TOOL\s+(read|glob|grep|edit|shell|websearch|question)\b/i;
+const PLAN_LINE_RE = /^CODEBRIDGE_PLAN\b/i;
+
+/** `CODEBRIDGE_PLAN {"steps": ["...", ...]}` 마커 줄을 파싱한다. 실패하면 null. */
+function parsePlanLine(line: string): string[] | null {
+  const t = line.trim();
+  if (!t.toUpperCase().startsWith('CODEBRIDGE_PLAN')) return null;
+  try {
+    const rest = t.slice('CODEBRIDGE_PLAN'.length).trim();
+    const v: unknown = JSON.parse(rest);
+    const arr = Array.isArray(v)
+      ? v
+      : v && typeof v === 'object' && Array.isArray((v as { steps?: unknown }).steps)
+        ? (v as { steps: unknown[] }).steps
+        : null;
+    if (!arr) return null;
+    const steps = arr.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim());
+    return steps.length > 0 ? steps : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseQuestionLine(line: string): QuestionMarker | null {
   const t = line.trim();
@@ -87,6 +109,7 @@ export default function MessageRow({
                 | { type: 'text'; value?: string }
                 | { type: 'card'; marker: QuestionMarker }
                 | { type: 'tool-failed'; count: number }
+                | { type: 'plan'; steps: string[] }
               > = [];
               let buffer = '';
               let inFence = false;
@@ -96,6 +119,14 @@ export default function MessageRow({
                 if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
                   inFence = !inFence;
                   buffer += line + '\n';
+                  continue;
+                }
+                // 계획 마커 라인은 숨기고 카드로 렌더링한다
+                if (!inFence && PLAN_LINE_RE.test(trimmed)) {
+                  if (buffer.trim()) segments.push({ type: 'text', value: buffer });
+                  buffer = '';
+                  const steps = parsePlanLine(line) ?? [];
+                  segments.push({ type: 'plan', steps });
                   continue;
                 }
                 // TOOL 원시 라인은 숨긴다 — ToolCallChip/QuestionCard가 같은 내용을 렌더링한다
@@ -130,7 +161,9 @@ export default function MessageRow({
               return (
                 <div key={i}>
                   {segments.map((seg, j) =>
-                    seg.type === 'text' ? (
+                    seg.type === 'plan' ? (
+                      <PlanCard key={j} steps={seg.steps} />
+                    ) : seg.type === 'text' ? (
                       <div
                         key={j}
                         className="prose prose-sm prose-invert max-w-none text-[13px] leading-relaxed text-text

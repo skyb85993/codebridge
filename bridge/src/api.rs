@@ -807,8 +807,21 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         .cloned()
         .collect::<Vec<_>>()
         .join(" | ");
+    let plan_steps = raw
+        .lines()
+        .find(|l| l.trim_start().starts_with("CODEBRIDGE_PLAN"))
+        .and_then(|l| {
+            let rest = l.trim_start().strip_prefix("CODEBRIDGE_PLAN")?.trim();
+            serde_json::from_str::<Value>(rest)
+                .ok()
+                .and_then(|v| v.get("steps")?.as_array().map(|s| s.len()))
+        });
+    let plan_note = match plan_steps {
+        Some(n) => format!(" plan={n}steps"),
+        None => String::new(),
+    };
     println!(
-        "[browser] model={} stream={} msgs={} calls=[{}] issues=[{}] id={id} raw_first=\"{}\"",
+        "[browser] model={} stream={} msgs={} calls=[{}] issues=[{}] id={id}{plan_note} raw_first=\"{}\"",
         req.model,
         req.stream,
         req.messages.len(),
