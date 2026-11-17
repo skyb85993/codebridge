@@ -1,5 +1,19 @@
 # 릴리즈 노트
 
+## v0.29.0 (2026-11-18)
+
+**Gemini 전송이 안 되던 문제 수정 + 코드 리뷰 수정분 반영**
+
+원인: 입력은 삽입됐지만 모델이 전송 버튼의 disabled 상태를 푸는 데 시간이 걸렸습니다.
+
+- Gemini 경로의 send_js를 버튼 enabled 여부(aria-disabled 포함)로 판단하도록 수정
+- 전송 클릭을 Angular Material 버튼 특성에 맞춰 CDP mouse-click 좌표 방식으로 바꿈 (실패 시 JS 클릭 폴백)
+- LIMIT_TEXTS 확장: Gemini 한국어 자유채팅 한도 문구 감지
+- 검수 수정분: 미사용 코드 제거(attach = Vec::new, CompletedPage, probe(), rotate_new_chat/send_and_await 래퍼), active_site 미사용 대입 제거, flatten TEST_COUNTER / extract_tool_calls를 test-only로 분리, attach mut 제거
+
+**검증**
+- cargo test --release 56/56, cargo build 0경고, npm run build:frontend OK, smoke-check 5/5 PASS.
+
 ## v0.28.0 (2026-11-18)
 
 **수정 — 첫 메시지만 보내지고 같은 대화의 다음 메시지부터 "전송 버튼 클릭 실패: disabled"**

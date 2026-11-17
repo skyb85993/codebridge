@@ -1,7 +1,7 @@
 {
   "name": "codebridge-desktop",
-  "version": "0.28.0",
-  "description": "CodeBridge Desktop — 무료 웹 채팅을 모델로 쓰는 독립 코딩 에이전트 앱 (opencode 백엔드 + 자체 프론트엔드)",
+  "version": "0.29.0",
+  "description": "CodeBridge Desktop ??臾대즺 ??梨꾪똿??紐⑤뜽濡??곕뒗 ?낅┰ 肄붾뵫 ?먯씠?꾪듃 ??(opencode 諛깆뿏??+ ?먯껜 ?꾨줎?몄뿏??",
   "main": "main.cjs",
   "private": true,
   "scripts": {

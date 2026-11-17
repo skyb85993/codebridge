@@ -95,6 +95,7 @@ pub struct ChatRequest {
     #[serde(default)]
     pub stream: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub tools: Option<Value>,
 }
 
@@ -374,7 +375,7 @@ fn msg_tool_text(m: &ChatMessage) -> String {
 /// 도구 실행 결과를 받은 턴: 같은 내용을 또 생성하지 않도록 웹사이트를 재호출하지 않고
 /// 마무리 텍스트로 짧게 응답한다 (토큰/쿼터 절약, Phase 2 간소화).
 /// flatten이 현재 단일 턴 재전송 구조라 (assistant 히스토리 포함 X) 동일 답변이 반복되는 것을 방지.
-fn ack_response(app: &AppState, req: &ChatRequest, content: &str) -> Response {
+fn ack_response(_app: &AppState, req: &ChatRequest, content: &str) -> Response {
     let id = next_id();
     if req.stream {
         sse::stream_response(id, req.model.clone(), content.to_string(), vec![], "stop".to_string())
@@ -527,7 +528,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
         }
     };
     let mut prompt = flat.prompt;
-    let mut attach = flat.attach;
+    let attach = flat.attach;
     let mut attach_ok = true;
     if !attach.is_empty() {
         let engine0 = automation::engine::Engine::new(app.cfg.automation.cdp_port);
@@ -557,7 +558,6 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
             Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
         };
         prompt = flat_inline.prompt;
-        attach = Vec::new();
     }
     println!(
         "[browser] cwd={} prompt_chars={} msg_count={}",
@@ -601,7 +601,7 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
 
     // 인수인계가 실제 실행된 경우 사용자에게 알리는 한 줄 (원격 세션 오해 방지)
     let mut handover_notice: Option<String> = None;
-    let (mut outcome, mut active_site) = if (forced_handover || auto_len_handover) && app.cfg.handover.mode == "auto" {
+    let (mut outcome, active_site) = if (forced_handover || auto_len_handover) && app.cfg.handover.mode == "auto" {
         let snap = harness::flatten::snapshot(&workspace);
         let tool_summary: String = req
             .messages
@@ -721,7 +721,6 @@ async fn browser_completions(app: &AppState, req: &ChatRequest) -> Response {
                     raw = o2.text;
                     blocks = o2.code_blocks;
                     truncated = o2.truncated;
-                    active_site = site2;
                     arc.log_handover_event("chain_ok", &format!("site={site2:?}"));
                 }
                 Err(e) => {

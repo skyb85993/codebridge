@@ -322,6 +322,7 @@ enum ToolBlock {
 }
 
 /// raw innerText에서 TOOL 라인을 찾아 tool_calls로 승격한다.
+#[cfg(test)]
 pub fn extract_tool_calls(raw: &str) -> ToolPromotion {
     extract_tool_calls_in(raw, None)
 }

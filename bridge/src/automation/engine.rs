@@ -52,12 +52,12 @@ const CHATGPT_SEL: SiteSelectors = SiteSelectors {
 const GEMINI_SEL: SiteSelectors = SiteSelectors {
     host: "gemini.google.com",
     composer_sel: "div.ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']",
-    assistant_sel: "message-content",
-    code_root_sel: "message-content",
-    stop_sel: "button[aria-label*='중지'], button[aria-label*='Stop'], button[aria-label*='stop']",
+    assistant_sel: "message-content, [data-testid=\"message-content\"], .response-content, div[class*=\"message-content\"], model-response, [data-testid=\"model-response\"]",
+    code_root_sel: "message-content, [data-testid=\"message-content\"], .response-content, div[class*=\"message-content\"], model-response, [data-testid=\"model-response\"]",
+    stop_sel: "button[aria-label*='중지'], button[aria-label*='Stop'], button[aria-label*='stop'], button[aria-label*='중단'], button[data-testid='stop-button']",
     send_native: true,
-    send_sel: "button[aria-label*='보내']",
-    new_chat_sel: "button[aria-label*='새 채팅'], button[aria-label='새 채팅']",
+    send_sel: "button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[aria-label='Send message'], button[data-testid='send-button'], button[data-testid='send']",
+    new_chat_sel: "button[aria-label*='새 채팅'], button[aria-label='새 채팅'], button[aria-label*='New chat'], button[aria-label='New chat'], button[data-testid*='new-chat'], button[data-testid='new_chat_button'], button[data-icon-name='MChatAdd']",
 };
 
 fn site_selectors(site: Site) -> &'static SiteSelectors {
@@ -69,15 +69,30 @@ fn site_selectors(site: Site) -> &'static SiteSelectors {
 
 /// 한도 배너 텍스트 (두 사이트 공통 + 사이트별)
 pub const LIMIT_TEXTS: &[&str] = &[
+    // 영어 (두 사이트 공통)
     "limit reached",
     "usage cap",
     "rate limit",
+    "daily limit",
+    "quota",
+    // 단어
+    "한도",
+    "할당량",
+    "사용량",
+    "리셋",
+    // GPT 한국어
     "메시지 한도",
     "사용 한도",
     "사용량 한도",
     "일일 한도",
-    "daily limit",
-    "quota",
+    // Gemini 한국어 (자유 채팅 무료 한도)
+    "오늘의 무료",
+    "현재 무료 요청",
+    "무료 요청을 모두",
+    "사용한 요청",
+    // Gemini 영어
+    "free requests",
+    "out of free",
 ];
 
 #[derive(Debug)]
@@ -134,12 +149,8 @@ pub struct SendOutcome {
     /// 마감 시간까지 세대 완료를 확인하지 못하고 끝난 부분 응답이면 true
     pub truncated: bool,
     /// 마지막 assistant 요소 안의 이미지 URL들 (DOM 순서). CODEBRIDGE_IMAGE 마커와 매칭.
+    #[allow(dead_code)]
     pub images: Vec<String>,
-}
-
-pub struct CompletedPage {
-    pub browser: Browser,
-    pub page: Page,
 }
 
 #[derive(Clone, Copy)]
@@ -388,41 +399,73 @@ impl Engine {
     async fn click_send(&self, page: &Page, site: Site) -> Result<(), EngineError> {
         let sel = site_selectors(site);
         if sel.send_native {
-            // 입력 직후 Angular가 버튼을 렌더링할 때까지 폴링 (최대 8초)
-            let deadline = Instant::now() + Duration::from_secs(8);
+            // Gemini: 버튼이 보이는 순간부터 활성화까지 폴링 (최대 15초)
+            let deadline = Instant::now() + Duration::from_secs(15);
+            const FIND_JS: &str = r#"(() => {
+                const b = document.querySelector("button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[data-testid='send-button'], button[data-testid='send']");
+                if (!b) return JSON.stringify({ found: false, enabled: false });
+                const r = b.getBoundingClientRect();
+                const dis = b.disabled === true || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('disabled') !== null;
+                return JSON.stringify({ found: r.width > 0 && r.height > 0, enabled: !dis, x: r.x, y: r.y, w: r.width, h: r.height });
+            })()"#;
             loop {
-                let found = eval_str(
-                    page,
-                    r#"String(!!document.querySelector("button[aria-label*='보내'], button[aria-label='Send message']"))"#,
-                )
-                .await?;
-                if found == "true" {
+                let raw = eval_str(&page, FIND_JS).await.unwrap_or_else(|_| "{}".to_string());
+                let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                let found = v.get("found").and_then(|x| x.as_bool()).unwrap_or(false);
+                let enabled = v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+                if found && enabled {
                     break;
                 }
                 if Instant::now() >= deadline {
-                    return Err(EngineError::Page(
-                        "전송 버튼이 활성화되지 않았습니다 (텍스트 입력 미반영?)".into(),
-                    ));
+                    // 마지막으로 버튼이라도 있으면 JS 클릭을 시도한다 (Quill이 아직 모델을 동기화하지 못한 경우 대비)
+                    let fallback = eval_str(
+                        page,
+                        r#"(() => {
+                            const b = document.querySelector("button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[data-testid='send-button'], button[data-testid='send']");
+                            if (!b) return 'missing';
+                            b.click();
+                            return 'clicked-js';
+                        })()"#,
+                    )
+                    .await
+                    .unwrap_or_else(|_| "error".to_string());
+                    return Err(EngineError::Page(format!(
+                        "전송 버튼이 활성화되지 않았습니다 (found={found}, enabled={enabled}, fallback={fallback})",
+                    )));
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-        }
-        if sel.send_native {
             // Angular Material 버튼: CDP Element 핸들 클릭은 타임아웃됨 →
             // JS로 좌표를 읽어 CDP 마우스 이벤트로 클릭 (2026-11-10 실측으로 확인된 동작 경로)
             let rect_json = eval_str(
                 page,
                 r#"(() => {
-                    const btn = document.querySelector("button[aria-label*='보내'], button[aria-label='Send message']");
-                    if (!btn) return '{}';
-                    const r = btn.getBoundingClientRect();
+                    const b = document.querySelector("button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[data-testid='send-button'], button[data-testid='send']");
+                    if (!b) return '{}';
+                    const r = b.getBoundingClientRect();
                     return JSON.stringify({ x: r.x, y: r.y, w: r.width, h: r.height });
                 })()"#,
             )
             .await?;
             let v: Value = serde_json::from_str(&rect_json).unwrap_or(Value::Null);
             if v.get("x").is_none() {
-                return Err(EngineError::Page("전송 버튼을 찾지 못했습니다".into()));
+                // 좌표를 못 읽으면 JS 클릭으로 마무리
+                let r = eval_str(
+                    page,
+                    r#"(() => {
+                        const b = document.querySelector("button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[data-testid='send-button'], button[data-testid='send']");
+                        if (!b) return 'missing';
+                        const dis = b.disabled === true || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('disabled') !== null;
+                        if (dis) return 'disabled';
+                        b.click();
+                        return 'clicked';
+                    })()"#,
+                )
+                .await?;
+                if r == "clicked" {
+                    return Ok(());
+                }
+                return Err(EngineError::Page(format!("전송 버튼 클릭 실패: {r}")));
             }
             let cx = v["x"].as_f64().unwrap_or(0.0) + v["w"].as_f64().unwrap_or(0.0) / 2.0;
             let cy = v["y"].as_f64().unwrap_or(0.0) + v["h"].as_f64().unwrap_or(0.0) / 2.0;
@@ -621,11 +664,6 @@ impl Engine {
         Ok((composer, url, title))
     }
 
-    /// 이전 동작과의 호환: ChatGPT probe
-    pub async fn probe(&self) -> Result<(bool, String, String), EngineError> {
-        self.probe_site(Site::ChatGpt).await
-    }
-
     /// "새 채팅" 버튼을 클릭해 새 스레드를 만든다 (F2.18/19)
     pub async fn rotate_new_chat_site(&self, site: Site) -> Result<(), EngineError> {
         let _op_guard = site_op_lock().await;
@@ -662,10 +700,6 @@ impl Engine {
     }
 
     /// 이전 동작과의 호환: ChatGPT rotate
-    pub async fn rotate_new_chat(&self) -> Result<(), EngineError> {
-        self.rotate_new_chat_site(Site::ChatGpt).await
-    }
-
     fn dedicated_chrome_pid_path() -> std::path::PathBuf {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let dir = std::path::PathBuf::from(appdata).join("CodeBridge");
@@ -752,12 +786,10 @@ impl Engine {
                     if !done {
                         if hide {
                             if super::winhide::hide_chrome_windows_for_pid(chrome_pid) > 0 {
-                                done = true;
                                 tracing::info!("전용 Chrome 창을 숨겼습니다 (pid={})", chrome_pid);
                                 break;
                             }
                         } else if super::winhide::show_chrome_windows_for_pid(chrome_pid) > 0 {
-                            done = true;
                             tracing::info!("전용 Chrome 창을 화면에 표시했습니다 (pid={})", chrome_pid);
                             break;
                         }
@@ -899,10 +931,15 @@ impl Engine {
                     const dis = b.disabled === true || b.getAttribute('aria-disabled') === 'true';
                     return dis ? 'false' : 'true';
                 })()"#.to_string(),
-                Site::Gemini => format!(
-                    r#"(() => {{ const el = {vis}; if (!el) return 'false'; return (el.innerText ?? el.value ?? '').trim() ? 'true' : 'false'; }})()"#,
-                    vis = visible_composer_expr(sel.composer_sel)
-                ),
+                Site::Gemini => r#"(() => {
+                    const b = document.querySelector("button[aria-label*='보내'], button[aria-label*='Send'], button[aria-label*='send'], button[data-testid='send-button'], button[data-testid='send']");
+                    if (!b) {
+                        const el = document.querySelector("div.ql-editor, rich-textarea div[contenteditable='true'], [contenteditable='true']");
+                        return (el && (el.innerText ?? el.value ?? '').trim()) ? 'true' : 'false';
+                    }
+                    const dis = b.disabled === true || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('disabled') !== null;
+                    return dis ? 'false' : 'true';
+                })()"#.to_string(),
             };
             let mut send_ready = false;
             for _ in 0..25 {
@@ -1047,10 +1084,6 @@ impl Engine {
     }
 
     /// 이전 동작과의 호환: ChatGPT send
-    pub async fn send_and_await(&self, prompt: &str) -> Result<SendOutcome, EngineError> {
-        self.send_and_await_site(prompt, Site::ChatGpt).await
-    }
-
     /// CODEBRIDGE_IMAGE/CODEBRIDGE_DOWNLOAD 마커가 있으면 파일을 다운로드하여
     /// 프로젝트 루트(현재 cwd) 기준 path에 저장하고,
     /// 마커를 "💾 path (N KB) 저장됨" 으로 교체한 텍스트를 돌려준다.

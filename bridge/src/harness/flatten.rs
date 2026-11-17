@@ -318,6 +318,7 @@ pub fn has_unterminated_fence(text: &str) -> bool {
 }
 
 // 테스트 모듈 스코프 공유 — 두 테스트가 같은 프로세스 ID를 쓰므로 반드시 하나의 카운터를 쓴다.
+#[cfg(test)]
 static TEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
