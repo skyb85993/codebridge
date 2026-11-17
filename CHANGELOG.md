@@ -1,5 +1,13 @@
 # 릴리즈 노트
 
+## v0.31.1 (2026-11-18)
+
+**CI smoke-check Phase B title race 수정**
+
+- 원인: waitForPage가 navigation commit 시점에 title=CodeBridge(Splash)를 읽어 OpenCode와 비교 -> CI에서 간헐적 실패
+- 수정: CDP Runtime.evaluate로 document.title을 직접 폴링해 Splash->OpenCode 전환을 기다림 (/global/health fetch도 엄격)
+- 검증: cargo test --release 56/56, npm run build:frontend OK, smoke-check 9/9 PASS
+
 ## v0.31.0 (2026-11-18)
 
 **smoke-check를 2단계 구조로 재구성해 CI 게이트가 실제 opencode Web UI 경로까지 검증**

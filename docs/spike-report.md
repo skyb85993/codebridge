@@ -434,7 +434,7 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
-## v0.31.0 — ProseMirror paste-first + 전송 버튼 enabled 검증 + 추론 강도 토글 (2026-11-18)
+## v0.31.1 — ProseMirror paste-first + 전송 버튼 enabled 검증 + 추론 강도 토글 (2026-11-18)
 
 **문제 확인**
 

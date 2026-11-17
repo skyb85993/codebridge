@@ -176,13 +176,19 @@ const test = async () => {
       check('B: window navigated to opencode Web UI', !!page,
         page ? (page.url + ' / title=' + page.title) : 'no page found');
       if (page) {
-        check('B: window title=OpenCode', page.title === 'OpenCode', 'title=' + page.title);
         const cdp = await connectWs(page, 8000);
-        await new Promise((r) => setTimeout(r, 3000));
+        // 페이지가 로드되어 OpenCode title로 세팅될 때까지 폴링
+        const t0w = Date.now();
+        let title = undefined;
+        while (Date.now() - t0w < 20_000) {
+          const v = await cdp.evaluate('document.title');
+          if (v === 'OpenCode') { title = v; break; }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        check('B: window title=OpenCode', title === 'OpenCode', 'title=' + String(title));
         const info = await cdp.evaluate(
-          "fetch('/global/health', { headers: { Authorization: 'Basic cGFjZQ==' } }).then(r => r.status).catch(() => 0)");
-        check('B: /global/health fetch', info === 200 || info === 401 || info === 0,
-          'status=' + String(info));
+          "fetch('/global/health').then(r => r.status).catch(() => 0)");
+        check('B: /global/health fetch', info === 200, 'status=' + String(info));
         cdp.close();
       }
     } catch (e) {
