@@ -434,6 +434,22 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.26.0 — fence_convention 강화 + 첨부 nodeId 수정 (2026-11-17)
+
+**fence_convention.md 재작성**
+
+- TOOL 값은 반드시 한 줄 — 줄바꿈은 `\n` 이스케이프로만. (실제 줄바꿈 시 도구 미실행으로 이어지던 근본 원인)
+- "완료"는 모든 작업이 끝났을 때만 — 새 요청이 들어왔는데 완료라고만 답하지 않기, 마지막 사용자 요청이라는 판단 기준 명시
+- 읽기→수정 순서, edit oldString 불일치 시 파일 전체 재작성, TOOL question은 모호할 때만
+
+**파일 직접 첨부 실수정**
+
+- `DOM.setFileInputFiles`에 `NodeId` 전달 (기존 objectId → `-32000 Object reference chain is too long` 4회 발생). `enable_dom` + `find_element`로 확보
+
+**검증**
+
+- cargo 56/56 green, fence_convention UTF-8/규칙 포함 확인.
+
 ## v0.25.0 — 파일 직접 첨부 + 버블 넘침 + "완료" 반복 수정 (2026-11-17)
 
 **파일 직접 첨부 (read 결과)**

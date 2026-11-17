@@ -500,13 +500,9 @@ impl Engine {
             ));
         }
 
-        // 파일 input이 있으면 바로 사용, 없으면 "첨부" 버튼을 눌러 동적으로 만들어 본다.
-        let input_ready = page
-            .evaluate("document.querySelector('input[type=file]')")
-            .await
-            .ok()
-            .map(|r| r.object().object_id.is_some())
-            .unwrap_or(false);
+        // DOM agent로 input[type=file]을 찾는다 (없으면 "첨부" 버튼을 눌러 동적으로 만든다)
+        let _ = page.enable_dom().await;
+        let input_ready = page.find_element("input[type=file]").await.is_ok();
         if !input_ready {
             let clicked = eval_str(
                 &page,
@@ -532,19 +528,14 @@ impl Engine {
             tokio::time::sleep(Duration::from_millis(1200)).await;
         }
 
-        // input[type=file]의 JS objectId를 받아 CDP로 파일을 주입
-        let res = page
-            .evaluate("document.querySelector('input[type=file]')")
+        // DOM agent로 input[type=file]의 nodeId를 받아 CDP로 파일을 주입
+        let input = page
+            .find_element("input[type=file]")
             .await
-            .map_err(|e| EngineError::Page(e.to_string()))?;
-        let object_id = res
-            .object()
-            .object_id
-            .clone()
-            .ok_or_else(|| EngineError::Page("파일 입력 input을 찾지 못했습니다".into()))?;
+            .map_err(|e| EngineError::Page(format!("파일 input 요소를 찾지 못했습니다: {e}")))?;
 
         let mut params = SetFileInputFilesParams::new(paths.to_vec());
-        params.object_id = Some(object_id);
+        params.node_id = Some(input.node_id);
         page.execute(params).await.map_err(|e| {
             EngineError::Page(format!("DOM.setFileInputFiles 실패: {e}"))
         })?;

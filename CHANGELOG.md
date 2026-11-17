@@ -1,5 +1,20 @@
 # 릴리즈 노트
 
+## v0.26.0 (2026-11-17)
+
+**fence_convention 개선** — GPT가 도구 규약을 어기던 두 가지 원인 수정:
+
+- TOOL 값에 실제 줄바꿈(raw newline)을 넣어 출력해 파싱이 어긋나"도구 1건이 실행되지 않았습니다"가 뜨던 문제 — "값은 반드시 한 줄, 줄바꿈은 `\n` 이스케이프" 규칙 명시 + 예시도 그 형식으로 통일
+- "완료"라는 최종 답만 남발하던 문제 — "작업이 모두 끝났을 때만 완료" / "새 요청이 들어왔는데 완료라고만 답하지 마세요" / "가장 마지막 사용자 요청을 판단하라" 규칙 추가
+- 읽기 → 수정 순서 강제, oldString 불일치 시 파일 전체 재작성, TOOL question 타이밍(모호할 때만)도 함께 명시
+
+**파일 직접 첨부(v0.25.0) 실제 동작하게 수정**
+
+- `DOM.setFileInputFiles`에 `objectId`를 넘기던 것을 `nodeId`로 교체 — `-32000 Object reference chain is too long`으로 4회 실패하던 원인. 이제 `enable_dom()` + `find_element("input[type=file]")`로 nodeId를 받아 주입
+
+**검증**
+- cargo 56/56 green, UTF-8 fence_convention 확인 (3351 chars, 규칙 포함 확인)
+
 ## v0.25.0 (2026-11-17)
 
 **새 기능 — read 도구로 읽은 파일을 ChatGPT에 직접 첨부**
