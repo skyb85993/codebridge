@@ -430,6 +430,36 @@ export default function SettingsModal({
             {/* 인수인계 */}
             <Section title="인수인계">
               <Row
+                label="추론 강도"
+                desc="GPT에게 얼마나 깊게 생각할지 지시합니다 — 낮음(가볍게) · 중간 · 높음(깊게 검증)"
+                control={
+                  <div className="flex gap-1 rounded-lg border border-lineSoft bg-panel2 p-1">
+                    {(
+                      [
+                        { id: 'low', label: '낮음' },
+                        { id: 'medium', label: '중간' },
+                        { id: 'high', label: '높음' },
+                      ] as const
+                    ).map((o) => {
+                      const active = settings.reasoningEffort === o.id;
+                      return (
+                        <button
+                          key={o.id}
+                          onClick={() =>
+                            patch({ reasoningEffort: o.id }, `추론 강도를 '${o.label}'으로 변경했습니다.`)
+                          }
+                          className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                            active ? 'bg-accent-grad text-[#06202b]' : 'text-dim hover:text-text'
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                }
+              />
+              <Row
                 label="스레드 한도"
                 desc="이 메시지 수에 도달하면 새 웹 채팅으로 인수인계합니다"
                 control={

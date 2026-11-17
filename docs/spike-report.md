@@ -434,6 +434,29 @@ experimental_image_generate, opencode_*, edit, write, Roblox_Studio_* 34` — **
 - `TERMINAL_TOOLS` 제거 — 모든 도구 결과를 GPT에게 다시 보여주고 계속 이어가게 한다. 완료 시점은 GPT가 tool이 없는 답("완료" 등)을 하는 것.
 - 무한 루프 방지는 도구 반복 감지(같은 이름+인자 4연속)만 유지, 나머지 한도는 제거.
 
+## v0.28.0 — ProseMirror paste-first + 전송 버튼 enabled 검증 + 추론 강도 토글 (2026-11-18)
+
+**문제 확인**
+
+- 첫 메시지는 전송되지만 같은 대화의 다음 턴부터 "입력 삽입 성공으로 보고되면서 전송 버튼 disabled → 실패"를 반복.
+- 원인: execCommand('insertText')가 DOM만 바꾸고 ProseMirror 상태는 동기화 안 됨 → btn.disabled가 유지됨.
+
+**수정**
+
+- 입력 순서: paste 시뮬레이션(dispatchEvent 반환 false=handled 판별) → execCommand → innerText 세팅.
+- 검증: innerText 폴링 대신 전송 버튼 enabled 폴링(25회 × 200ms). Gemini는 innerText 폴링 유지.
+- 첨부 성공 판정: input.files.length 검사 → 파일명이 부착 카드 텍스트로도 확인하도록 확장 (inFiles>0 || hits>0).
+- 추론 강도 토글 추가: SettingsModal "추론 강도" + 컴포저 EffortPicker. settings에 저장 → 브릿지 env `CODEBRIDGE_REASONING_EFFORT` → flatten tail에 지시문 주입(low/high만).
+- 브릿지 재시작 대상: reasoningEffort 변경 시에도 재시작.
+
+**Gemini/ChatGPT 공동 유지**
+
+- 입력 로직 사이트 공통. 검증만 사이트별 — ChatGPT=전송 버튼 enabled, Gemini=innerText.
+
+**검증**
+
+- cargo 56/56 green, 프론트 빌드 OK, smoke 5/5 PASS.
+
 ## v0.27.0 — 계획 먼저 + 자동 진행 체크리스트 (2026-11-18)
 
 **동작**

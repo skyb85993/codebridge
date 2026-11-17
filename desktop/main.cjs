@@ -174,6 +174,7 @@ const SETTINGS_DEFAULTS = {
   recentProjects: [],            // 최근 프로젝트 폴더 목록 (최신순, 최대 5개)
   onboarded: false,              // 첫 실행/온보딩 안내 표시 여부 (사용자가 닫으면 true)
   exportDir: '',                 // 대화 내보내기 마지막 저장 폴더
+  reasoningEffort: 'medium',     // GPT 추론 강도 — low | medium | high (CODEBRIDGE_REASONING_EFFORT)
 };
 function getSettings() {
   return { ...SETTINGS_DEFAULTS, ...readSettings() };
@@ -283,6 +284,7 @@ async function spawnBridge(cwd) {
     CODEBRIDGE_HANDOVER_LIMIT: String(settings.handoverLimit),
     CODEBRIDGE_CHROME_KEEP_VISIBLE: settings.chromeAlwaysVisible ? '1' : '0',
     CODEBRIDGE_NO_CONTEXT_NOTE: settings.hideContextNote ? '1' : '0',
+    CODEBRIDGE_REASONING_EFFORT: settings.reasoningEffort || 'medium',
   };
   bridgeProc = spawn(BRIDGE_EXE, [], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   bridgeProc.stdout.pipe(stream);
@@ -999,6 +1001,9 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
     const n = Number(patch.handoverLimit);
     if (Number.isInteger(n) && [10, 25, 50].includes(n)) next.handoverLimit = n;
   }
+  if (typeof patch.reasoningEffort === 'string' && ['low', 'medium', 'high'].includes(patch.reasoningEffort)) {
+    next.reasoningEffort = patch.reasoningEffort;
+  }
   if (typeof patch.chromeAlwaysVisible === 'boolean') next.chromeAlwaysVisible = patch.chromeAlwaysVisible;
   if (typeof patch.notifyEnabled === 'boolean') next.notifyEnabled = patch.notifyEnabled;
   if (typeof patch.hideContextNote === 'boolean') next.hideContextNote = patch.hideContextNote;
@@ -1021,9 +1026,10 @@ ipcMain.handle('app:setSettings', async (_e, patch) => {
     cur.dangerConfirm !== next.dangerConfirm ||
     cur.handoverLimit !== next.handoverLimit ||
     cur.chromeAlwaysVisible !== next.chromeAlwaysVisible ||
-    cur.hideContextNote !== next.hideContextNote;
+    cur.hideContextNote !== next.hideContextNote ||
+    cur.reasoningEffort !== next.reasoningEffort;
   if (bridgeAffected && projectDir) {
-    appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit})\n`);
+    appendLog('settings', `[settings] bridge restart (dangerConfirm=${next.dangerConfirm} handoverLimit=${next.handoverLimit} reasoningEffort=${next.reasoningEffort})\n`);
     await spawnBridge(projectDir);
   }
   return { ok: true, settings: next };

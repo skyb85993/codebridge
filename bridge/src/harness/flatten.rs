@@ -243,10 +243,21 @@ fn build_with(
         }
     }
 
+    let effort = std::env::var("CODEBRIDGE_REASONING_EFFORT")
+        .unwrap_or_else(|_| "medium".to_string())
+        .to_lowercase();
+    let effort_line = match effort.as_str() {
+        "low" => "- 가능한 한 짧고 가볍게 답하세요. 깊게 생각하지 마세요.\n",
+        "high" => "- 깊게 생각하고, 직접 검증한 뒤에 답하세요. 추정과 실제를 구분하세요.\n",
+        _ => "",
+    };
     // 워크스페이스 파일 목록은 작게 유지 — 가장 중요한 건 대화 기록
     let snapshot = snapshot(workspace_root);
     let mut prompt = String::new();
     prompt.push_str(&header);
+    if !effort_line.is_empty() {
+        prompt.push_str(effort_line);
+    }
     prompt.push_str("\n## 대화 기록\n");
     prompt.push_str(convo.trim_end());
     prompt.push_str("\n\n[현재 워크스페이스 파일]\n");

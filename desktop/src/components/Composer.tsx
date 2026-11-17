@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { ArrowUp, Square } from 'lucide-react';
 import ModelPicker from './ModelPicker';
+import EffortPicker, { type Effort } from './EffortPicker';
 import { ModelID } from '../api';
 
 interface ComposerProps {
@@ -9,9 +10,11 @@ interface ComposerProps {
   busy: boolean;
   model: ModelID;
   onModelChange: (m: ModelID) => void;
+  effort: Effort;
+  onEffortChange: (e: Effort) => void;
 }
 
-export default function Composer({ onSend, onInterrupt, busy, model, onModelChange }: ComposerProps) {
+export default function Composer({ onSend, onInterrupt, busy, model, onModelChange, effort, onEffortChange }: ComposerProps) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -27,7 +30,7 @@ export default function Composer({ onSend, onInterrupt, busy, model, onModelChan
     return () => window.removeEventListener('codebridge:fill-composer', fill);
   }, []);
 
-  // 입력이 늘어날 때마다 높이 자동 조절 (최대 10줄)
+  // 입력이 길어질수록 높이를 자동으로 조절 (최대 10줄)
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -69,12 +72,13 @@ export default function Composer({ onSend, onInterrupt, busy, model, onModelChan
             className="max-h-60 min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[13.5px] leading-relaxed text-text placeholder-dim outline-none"
           />
           <ModelPicker value={model} onChange={onModelChange} disabled={busy} />
+          <EffortPicker value={effort} onChange={onEffortChange} disabled={busy} />
           {busy ? (
             <button
               type="button"
               onClick={onInterrupt}
               className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-danger/90 text-white transition-all hover:bg-danger"
-              title="생성 중지"
+              title="생성 중단"
             >
               <Square size={15} fill="currentColor" strokeWidth={0} />
             </button>

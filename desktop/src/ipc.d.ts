@@ -33,6 +33,7 @@ export type HostSettings = {
   exportDir: string;
   projectDir: string | null;
   logDir: string;
+  reasoningEffort: 'low' | 'medium' | 'high';
 };
 export type HostMode = 'app:ready';
 export type UpdateState =
@@ -56,6 +57,7 @@ export type HostSettingsPatch = Partial<
     | 'hideContextNote'
     | 'startAtBoot'
     | 'onboarded'
+    | 'reasoningEffort'
   >
 >;
 

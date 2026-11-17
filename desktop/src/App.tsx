@@ -26,6 +26,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [model, setModel] = useState<ModelID>(DEFAULT_MODEL);
+  const [reasoningEffort, setReasoningEffort] = useState<'low' | 'medium' | 'high'>('medium');
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<HostProbe | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -62,6 +63,7 @@ export default function App() {
       .getSettings()
       .then((s) => {
         setModel(s.model);
+        setReasoningEffort(s.reasoningEffort ?? 'medium');
         setOnboarded(s.onboarded === true);
         setRecentProjects(s.recentProjects ?? []);
       })
@@ -502,6 +504,15 @@ export default function App() {
     [activeId],
   );
 
+  const changeEffort = useCallback(async (e: 'low' | 'medium' | 'high') => {
+    setReasoningEffort(e);
+    try {
+      await window.codebridge.setSettings({ reasoningEffort: e });
+    } catch {
+      /* 설정 저장 실패 무시 */
+    }
+  }, []);
+
   // 설정 화면의 "현재 대화에도 적용" — 진행 중인 세션의 모델도 바꾼다
   const applyModelToCurrent = useCallback(
     (m: ModelID) => {
@@ -686,6 +697,8 @@ export default function App() {
             busy={busy}
             model={model}
             onModelChange={changeModel}
+            effort={reasoningEffort}
+            onEffortChange={changeEffort}
           />
         </main>
       </div>

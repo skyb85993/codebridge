@@ -541,21 +541,54 @@ impl Engine {
         })?;
         tokio::time::sleep(Duration::from_millis(800)).await;
 
-        // 실제로 파일이 들어갔는지 확인
-        let after = eval_str(
-            &page,
-            "String(document.querySelector('input[type=file]')?.files?.length ?? -1)",
-        )
-        .await
-        .unwrap_or_else(|_| "-1".to_string());
-        println!("[browser] 파일 직접 첨부 요청 {:?} -> input.files.length={}", paths, after);
-        let n: i64 = after.parse().unwrap_or(0);
-        if n <= 0 {
-            return Err(EngineError::Page(format!(
-                "파일이 input에 설정되지 않았습니다 (files.length={after})"
-            )));
+        // 첨부 성공 여부를 넓게 확인한다 — files.length(React가 input을 즉시 재배치하면 0으로 보일 수 있음)뿐 아니라
+        // 첨부 카드(파일명이 보이는 요소)도 함께 본다.
+        let file_names: Vec<String> = paths
+            .iter()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.clone())
+            })
+            .collect();
+        let names_js = file_names
+            .iter()
+            .map(|n| js_string(n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut attached = false;
+        for _ in 0..16 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let probe_js = format!(
+                r#"(() => {{
+                    const i = document.querySelector('input[type=file]');
+                    const inFiles = i ? i.files.length : 0;
+                    const names = [{names}];
+                    // 첨부 카드: 파일명이 텍스트로 보이고 attach/file/clip 계열 클래스 또는 testid/aria-label에 매칭
+                    const candidates = [...document.querySelectorAll('[class*="attach" i],[class*="file" i],[class*="clip" i],[data-testid*="attach" i],[data-testid*="file" i],[aria-label*="제거"],[aria-label*="remove" i],[aria-label*="delete" i]')];
+                    const hits = candidates.filter(el => names.some(n => (el.textContent || '').includes(n))).length;
+                    return JSON.stringify({{ inFiles, hits }});
+                }})()"#,
+                names = names_js
+            );
+            let raw = eval_str(&page, &probe_js).await.unwrap_or_default();
+            if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                let in_files = v["inFiles"].as_i64().unwrap_or(0);
+                let hits = v["hits"].as_i64().unwrap_or(0);
+                if in_files > 0 || hits > 0 {
+                    attached = true;
+                    println!("[browser] 파일 직접 첨부 확인: inFiles={in_files}, hits={hits}");
+                    break;
+                }
+            }
         }
-        Ok(n as usize)
+        if !attached {
+            return Err(EngineError::Page(
+                "파일이 input에 설정되지 않았습니다 (파일명 UI가 나타나지 않음)".into(),
+            ));
+        }
+        Ok(paths.len())
     }
 
     /// 컴포저 존재 여부/URL/타이틀을 읽어 올 수 있는지만 확인한다 (로그인 점검용).
@@ -806,9 +839,9 @@ impl Engine {
         .await
         .unwrap_or_default();
 
-        // 입력 — execCommand가 숨김 창 + 새 페이지에서 실패할 수 있어 3단계 폴백을 쓴다.
-        // 중요: chatgpt.com은 같은 셀렉터에 비가시 ProseMirror 노드를 먼저 둔다.
-        //       보이는(visible) 컴포저만 대상으로 하며, 삽입 전 잔여 텍스트를 지운 뒤 넣는다.
+        // 입력 — paste 시뮬레이션이 ProseMirror 모델을 동기화하므로 오래 실패하던
+        // "삽입은 성공했는데 전송 버튼이 disabled" 문제를 해소한다.
+        // 검증은 화면 텍스트가 아니라 "전송 버튼이 활성화됐는지"로 한다.
         let mut inserted = false;
         for attempt in 1..=3 {
             let insert = format!(
@@ -821,16 +854,17 @@ impl Engine {
                         document.execCommand('selectAll', false, null);
                         document.execCommand('delete', false, null);
                     }} catch (e) {{}}
-                    // ① execCommand('insertText')
-                    try {{
-                        if (document.execCommand && document.execCommand('insertText', false, {text})) return 'execCommand';
-                    }} catch (e) {{}}
-                    // ② ClipboardEvent paste 시뮬레이션 (ProseMirror paste 핸들러가 소비)
+                    // ① ClipboardEvent paste — ProseMirror paste 핸들러가 소비하면 모델까지 동기화됨
+                    //    (dispatchEvent가 false를 반환 = 핸들러가 preventDefault → 소비됨)
                     try {{
                         const dt = new DataTransfer();
                         dt.setData('text/plain', {text});
-                        el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
-                        return 'paste';
+                        const handled = !el.dispatchEvent(new ClipboardEvent('paste', {{ clipboardData: dt, bubbles: true, cancelable: true }}));
+                        if (handled) return 'paste';
+                    }} catch (e) {{}}
+                    // ② execCommand('insertText')
+                    try {{
+                        if (document.execCommand && document.execCommand('insertText', false, {text})) return 'execCommand';
                     }} catch (e) {{}}
                     // ③ 직접 텍스트 세팅 + InputEvent (최후 수단)
                     try {{
@@ -840,7 +874,7 @@ impl Engine {
                             const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value').set;
                             setter.call(el, {text});
                         }}
-                        el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: {text} }}));
+                        el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: {text}, inputType: 'insertText' }}));
                         return 'direct';
                     }} catch (e) {{
                         return 'failed';
@@ -850,26 +884,41 @@ impl Engine {
                 text = js_string(prompt),
             );
             let r = eval_str(&page, &insert).await?;
-            if r != "missing" && r != "failed" {
-                // 삽입 결과 확인 — 보이는 컴포저만 읽는다 (첫 매치 비가시 노드 방지)
-                let check = eval_str(
-                    &page,
-                    &format!(
-                        r#"(() => {{ const el = {vis}; if (!el) return ''; return el.innerText !== undefined ? el.innerText : (el.value ?? ''); }})()"#,
-                        vis = visible_composer_expr(sel.composer_sel)
-                    ),
-                )
-                .await
-                .unwrap_or_default();
-                if !check.trim().is_empty() {
-                    println!("[browser] 입력 삽입 성공 (attempt {attempt}, 방법={r})");
-                    inserted = true;
+            if r == "missing" || r == "failed" {
+                println!("[browser] 입력 삽입 실패 (attempt {attempt}): {r} — 재시도");
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                continue;
+            }
+            // 삽입된 게 맞는지 재검증 — 고정 텍스트 기준이 아니라 "모델이 반영됐는지" 기준.
+            // ChatGPT: 전송 버튼이 enabled(true)가 될 때까지 폴링.
+            // Gemini: innerText 폴링.
+            let send_js = match site {
+                Site::ChatGpt => r#"(() => {
+                    const b = document.querySelector("button[data-testid='send-button'], button[aria-label*='보내'], button[aria-label='Send prompt'], button[aria-label='Send']");
+                    if (!b) return 'missing';
+                    const dis = b.disabled === true || b.getAttribute('aria-disabled') === 'true';
+                    return dis ? 'false' : 'true';
+                })()"#.to_string(),
+                Site::Gemini => format!(
+                    r#"(() => {{ const el = {vis}; if (!el) return 'false'; return (el.innerText ?? el.value ?? '').trim() ? 'true' : 'false'; }})()"#,
+                    vis = visible_composer_expr(sel.composer_sel)
+                ),
+            };
+            let mut send_ready = false;
+            for _ in 0..25 {
+                let st = eval_str(&page, &send_js).await.unwrap_or_default();
+                if st == "true" {
+                    send_ready = true;
                     break;
                 }
-                println!("[browser] 입력 삽입 후 확인 실패 (attempt {attempt}, 방법={r}): 컴포저가 비어 있음 — 재시도");
-            } else {
-                println!("[browser] 입력 삽입 실패 (attempt {attempt}): {r} — 재시도");
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
+            if send_ready {
+                println!("[browser] 입력 삽입 성공 (attempt {attempt}, 방법={r}) — 모델 동기화 확인");
+                inserted = true;
+                break;
+            }
+            println!("[browser] 입력 삽입은 됐지만 전송 버튼이 아직 disabled (attempt {attempt}, 방법={r}) — 재시도");
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
         if !inserted {
